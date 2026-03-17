@@ -54,11 +54,13 @@ function timeSince(ts) {
 }
 
 // ─── LedBar ──────────────────────────────────────────────────────────────────
-function LedBar({ value, segments = 20, warn = 0.7, crit = 0.9, width = 80, height = 10, color }) {
+// fluid=true: bar fills container width via SVG viewBox scaling
+function LedBar({ value, segments = 20, warn = 0.7, crit = 0.9, width = 80, height = 10, color, fluid = false }) {
   const filled = Math.round((value || 0) * segments);
+  // Logical coordinates for viewBox (4px seg + 1px gap)
+  const segW = 4, gap = 1, unit = segW + gap;
+  const vbW = segments * unit - gap;
   const segs = [];
-  const segW = Math.floor((width - segments + 1) / segments);
-  const gap = 1;
 
   for (let i = 0; i < segments; i++) {
     const on = i < filled;
@@ -69,29 +71,43 @@ function LedBar({ value, segments = 20, warn = 0.7, crit = 0.9, width = 80, heig
       else if (i / segments >= warn) fill = C.amberHi;
       else fill = C.greenHi;
     }
-    segs.push(h('rect', {
-      key: i,
-      x: i * (segW + gap),
-      y: 0,
-      width: segW,
-      height,
-      fill,
-    }));
+    segs.push(h('rect', { key: i, x: i * unit, y: 0, width: segW, height, fill }));
   }
 
+  if (fluid) {
+    return html`
+      <svg
+        width="100%"
+        height=${height}
+        viewBox="0 0 ${vbW} ${height}"
+        preserveAspectRatio="none"
+        style="display:block;flex:1;min-width:0"
+      >${segs}</svg>
+    `;
+  }
+
+  const pixW = Math.floor((width - segments + 1) / segments);
+  const fixedSegs = segs.map((_, i) => {
+    const on = i < filled;
+    let fill = C.dimmer;
+    if (on) {
+      if (color) fill = color;
+      else if (i / segments >= crit) fill = C.red;
+      else if (i / segments >= warn) fill = C.amberHi;
+      else fill = C.greenHi;
+    }
+    return h('rect', { key: i, x: i * (pixW + 1), y: 0, width: pixW, height, fill });
+  });
   return html`
-    <svg width=${width} height=${height} style="display:block;flex-shrink:0">
-      ${segs}
-    </svg>
+    <svg width=${width} height=${height} style="display:block;flex-shrink:0">${fixedSegs}</svg>
   `;
 }
 
 // ─── NetTicker ───────────────────────────────────────────────────────────────
 function NetTicker({ mbps, maxMbps, label }) {
   const dotsRef = useRef([]);
-  const containerRef = useRef(null);
   const mbpsRef = useRef(mbps);
-  const maxRef = useRef(maxMbps);
+  const maxRef  = useRef(maxMbps);
 
   useEffect(() => { mbpsRef.current = mbps; }, [mbps]);
   useEffect(() => { maxRef.current = maxMbps; }, [maxMbps]);
@@ -112,8 +128,7 @@ function NetTicker({ mbps, maxMbps, label }) {
       ref: el => { dotsRef.current[i] = el; },
       style: {
         display: 'inline-block',
-        width: 5,
-        height: 5,
+        width: 5, height: 5,
         borderRadius: '50%',
         background: C.greenHi,
         opacity: 0.12,
@@ -124,23 +139,23 @@ function NetTicker({ mbps, maxMbps, label }) {
   );
 
   return html`
-    <span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:${C.dim}">
-      <span style="color:${C.dim}">${label}</span>
-      <span ref=${containerRef} style="display:inline-flex;align-items:center">${dots}</span>
-      <span style="color:${C.white};min-width:40px;text-align:right">${fmt(mbps, 2)}<span style="color:${C.dim}">MB/s</span></span>
+    <span style="display:inline-flex;align-items:center;gap:4px;font-size:clamp(9px,0.9vw,12px);color:${C.dim}">
+      <span>${label}</span>
+      <span style="display:inline-flex;align-items:center">${dots}</span>
+      <span style="color:${C.white};min-width:38px;text-align:right">${fmt(mbps, 2)}<span style="color:${C.dim}">MB/s</span></span>
     </span>
   `;
 }
 
 // ─── HeaderBar ───────────────────────────────────────────────────────────────
 function HeaderBar({ node, lxcs, config }) {
-  if (!node) return html`<div style="height:36px;border-bottom:1px solid ${C.borderDim}"></div>`;
+  if (!node) return html`<div style="height:2.4em;border-bottom:1px solid ${C.borderDim}"></div>`;
 
-  const cpuPct = node.cpu || 0;
-  const memPct = node.mem_total ? node.mem_used / node.mem_total : 0;
+  const cpuPct    = node.cpu || 0;
+  const memPct    = node.mem_total ? node.mem_used / node.mem_total : 0;
   const netInMbps = bytesToMbps(node.net_in);
-  const netOutMbps = bytesToMbps(node.net_out);
-  const maxMbps = config ? config.max_net_mbps : 1000;
+  const netOutMbps= bytesToMbps(node.net_out);
+  const maxMbps   = config ? config.max_net_mbps : 1000;
   const activeCount = lxcs.filter(l => l.status === 'running').length;
 
   const tempColor = node.cpu_temp == null ? C.dim
@@ -148,42 +163,41 @@ function HeaderBar({ node, lxcs, config }) {
     : node.cpu_temp >= 65 ? C.amberHi
     : C.white;
 
+  const fs = 'clamp(9px,0.95vw,13px)';
+
   return html`
     <div style="
       display: flex;
       align-items: center;
-      gap: 12px;
-      padding: 6px 10px;
+      gap: clamp(6px,0.8vw,14px);
+      padding: clamp(4px,0.5vh,8px) clamp(6px,0.8vw,12px);
       border-bottom: 1px solid ${C.border};
       background: ${C.panel};
-      font-size: 11px;
+      font-size: ${fs};
       flex-wrap: nowrap;
       overflow: hidden;
+      flex-shrink: 0;
     ">
-      <!-- Hostname -->
       <span style="color:${C.amberHi};font-weight:bold;flex-shrink:0;letter-spacing:1px">
         ${config ? config.panel_title : 'HOST'}
       </span>
 
       <span style="color:${C.borderDim}">│</span>
 
-      <!-- CPU -->
       <span style="display:flex;align-items:center;gap:4px;flex-shrink:0">
         <span style="color:${C.dim}">CPU</span>
         ${h(LedBar, { value: cpuPct, width: 60, height: 8 })}
-        <span style="color:${C.white};min-width:28px">${pct(cpuPct)}%</span>
+        <span style="color:${C.white};min-width:26px">${pct(cpuPct)}%</span>
       </span>
 
-      <!-- MEM -->
       <span style="display:flex;align-items:center;gap:4px;flex-shrink:0">
         <span style="color:${C.dim}">MEM</span>
         ${h(LedBar, { value: memPct, width: 60, height: 8, color: C.blueHi })}
-        <span style="color:${C.white};min-width:28px">${pct(memPct)}%</span>
+        <span style="color:${C.white};min-width:26px">${pct(memPct)}%</span>
       </span>
 
       <span style="color:${C.borderDim}">│</span>
 
-      <!-- TEMP -->
       ${node.cpu_temp != null ? html`
         <span style="flex-shrink:0">
           <span style="color:${C.dim}">TEMP </span>
@@ -192,21 +206,17 @@ function HeaderBar({ node, lxcs, config }) {
         <span style="color:${C.borderDim}">│</span>
       ` : null}
 
-      <!-- Network -->
       ${h(NetTicker, { mbps: netInMbps, maxMbps, label: '↓' })}
       ${h(NetTicker, { mbps: netOutMbps, maxMbps, label: '↑' })}
 
       <span style="color:${C.borderDim}">│</span>
 
-      <!-- Uptime -->
       <span style="flex-shrink:0;color:${C.dim}">
         UP <span style="color:${C.white}">${formatUptime(node.uptime)}</span>
       </span>
 
-      <!-- Active count -->
       <span style="flex-shrink:0;color:${C.dim}">
-        <span style="color:${C.greenHi}">${activeCount}</span>/<span style="color:${C.white}">${lxcs.length}</span>
-        <span> LXC</span>
+        <span style="color:${C.greenHi}">${activeCount}</span>/<span style="color:${C.white}">${lxcs.length}</span> LXC
       </span>
     </div>
   `;
@@ -217,25 +227,20 @@ function LxcCell({ lxc, flickerRef }) {
   const cellRef = useRef(null);
   const vmid = lxc.vmid;
 
-  // Apply flicker on 80ms interval via direct DOM
   useEffect(() => {
     const id = setInterval(() => {
       if (!cellRef.current) return;
-      const brightness = flickerRef.current[vmid] ?? 1;
-      cellRef.current.style.opacity = String(brightness);
+      cellRef.current.style.opacity = String(flickerRef.current[vmid] ?? 1);
     }, 80);
     return () => clearInterval(id);
   }, [vmid]);
 
-  const isRunning = lxc.status === 'running';
-  const ioTotal = (lxc.disk_read || 0) + (lxc.disk_write || 0);
-  const ioActive = isRunning && ioTotal > 0;
-
-  const lampColor  = !isRunning ? C.dimmer : ioActive ? C.amberHi : C.greenHi;
+  const isRunning   = lxc.status === 'running';
+  const ioTotal     = (lxc.disk_read || 0) + (lxc.disk_write || 0);
+  const ioActive    = isRunning && ioTotal > 0;
+  const lampColor   = !isRunning ? C.dimmer : ioActive ? C.amberHi : C.greenHi;
   const borderColor = !isRunning ? C.borderDim : ioActive ? C.amber : C.green;
-  const glowColor  = !isRunning ? 'none' : ioActive
-    ? `0 0 8px ${C.amber}88`
-    : `0 0 8px ${C.green}88`;
+  const glowColor   = !isRunning ? 'none' : ioActive ? `0 0 8px ${C.amber}88` : `0 0 8px ${C.green}88`;
 
   return html`
     <div style="
@@ -245,21 +250,15 @@ function LxcCell({ lxc, flickerRef }) {
       border: 1px solid ${borderColor};
       background: ${C.panel};
       box-shadow: ${glowColor};
-      aspect-ratio: 0.75;
       overflow: hidden;
+      min-height: 0;
     ">
       <!-- IO pip -->
       ${ioActive ? html`
         <div style="
-          position: absolute;
-          top: 3px;
-          right: 3px;
-          width: 5px;
-          height: 5px;
-          border-radius: 50%;
-          background: ${C.amberHi};
-          box-shadow: 0 0 4px ${C.amberHi};
-          z-index: 2;
+          position:absolute;top:3px;right:3px;
+          width:5px;height:5px;border-radius:50%;
+          background:${C.amberHi};box-shadow:0 0 4px ${C.amberHi};z-index:2;
         "></div>
       ` : null}
 
@@ -271,23 +270,19 @@ function LxcCell({ lxc, flickerRef }) {
         display: flex;
         align-items: center;
         justify-content: center;
-        position: relative;
+        min-height: 0;
       ">
         <div style="
-          width: 60%;
-          height: 60%;
+          width: 60%; height: 60%;
           border-radius: 4px;
           background: ${lampColor}${isRunning ? '30' : '10'};
           border: 1px solid ${lampColor}${isRunning ? '80' : '20'};
-          display: flex;
-          align-items: center;
-          justify-content: center;
+          display: flex; align-items: center; justify-content: center;
         ">
           <span style="
-            font-size: 8px;
+            font-size: clamp(7px,1vw,13px);
             color: ${isRunning ? lampColor : C.dimmer};
             opacity: 0.85;
-            letter-spacing: 0;
             user-select: none;
           ">${lxc.vmid}</span>
         </div>
@@ -295,15 +290,16 @@ function LxcCell({ lxc, flickerRef }) {
 
       <!-- Name strip -->
       <div style="
-        padding: 2px 0;
+        padding: clamp(1px,0.3vh,3px) 0;
         text-align: center;
-        font-size: 9px;
-        letter-spacing: 0.5px;
+        font-size: clamp(7px,0.75vw,11px);
+        letter-spacing: 0.4px;
         color: ${isRunning ? C.white : C.dim};
         background: ${C.bg};
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+        flex-shrink: 0;
       ">
         ${lxc.display_name || lxc.name || lxc.vmid}
       </div>
@@ -313,14 +309,18 @@ function LxcCell({ lxc, flickerRef }) {
 
 // ─── LxcGrid ─────────────────────────────────────────────────────────────────
 function LxcGrid({ lxcs, cols, flickerRef }) {
+  const rows = Math.ceil(lxcs.length / cols);
   return html`
-    <div style="
-      display: grid;
-      grid-template-columns: repeat(${cols}, 1fr);
-      gap: 6px;
-      padding: 10px;
-    ">
-      ${lxcs.map(lxc => h(LxcCell, { key: lxc.vmid, lxc, flickerRef }))}
+    <div style="flex:1;overflow:hidden;padding:clamp(5px,0.7vh,10px);min-height:0">
+      <div style="
+        height: 100%;
+        display: grid;
+        grid-template-columns: repeat(${cols}, 1fr);
+        grid-template-rows: repeat(${rows}, 1fr);
+        gap: clamp(3px,0.5vw,8px);
+      ">
+        ${lxcs.map(lxc => h(LxcCell, { key: lxc.vmid, lxc, flickerRef }))}
+      </div>
     </div>
   `;
 }
@@ -331,55 +331,50 @@ function GpuRow({ gpu }) {
   const vramPct = (gpu.vram_total_gb && gpu.vram_used_gb != null)
     ? gpu.vram_used_gb / gpu.vram_total_gb : 0;
   const utilPct = (gpu.gpu_util || 0) / 100;
+  const labelW  = 'clamp(28px,3vw,44px)';
+  const valW    = 'clamp(32px,4vw,56px)';
+  const barH    = 'clamp(6px,0.8vh,11px)';
 
   return html`
     <div style="
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 6px 10px;
+      padding: clamp(4px,0.5vh,8px) clamp(6px,0.8vw,12px);
       border-top: 1px solid ${C.borderDim};
-      font-size: 11px;
+      font-size: clamp(9px,0.9vw,12px);
     ">
-      <!-- Name OLED -->
-      <div style="
-        background: #000;
-        border: 1px solid ${C.borderDim};
-        padding: 2px 6px;
-        min-width: 90px;
-        color: ${C.purpleHi};
-        font-size: 10px;
-        letter-spacing: 1px;
-        flex-shrink: 0;
-      ">${gpu.display_name}</div>
+      <!-- Top row: name OLED + live stats -->
+      <div style="display:flex;align-items:center;gap:clamp(6px,0.8vw,12px);margin-bottom:clamp(3px,0.4vh,6px)">
+        <div style="
+          background:#000;border:1px solid ${C.borderDim};
+          padding:2px clamp(4px,0.5vw,8px);
+          color:${C.purpleHi};font-size:clamp(8px,0.85vw,11px);
+          letter-spacing:1px;flex-shrink:0;white-space:nowrap;
+        ">${gpu.display_name}</div>
 
-      <!-- Stats -->
-      <span style="color:${C.dim};flex-shrink:0">
         ${hasData ? html`
           <span style="color:${C.white}">${gpu.gpu_util}%</span>
-          <span> util · </span>
+          <span style="color:${C.dim}">util ·</span>
           <span style="color:${gpu.temp >= 80 ? C.red : gpu.temp >= 65 ? C.amberHi : C.white}">${gpu.temp}°C</span>
-          <span> · </span>
-          <span style="color:${C.tealHi}">${gpu.process || '—'}</span>
+          ${gpu.process ? html`<span style="color:${C.dim}">·</span><span style="color:${C.tealHi}">${gpu.process}</span>` : null}
         ` : html`<span style="color:${C.dimmer}">NO DATA</span>`}
-      </span>
+      </div>
 
-      <span style="flex:1"></span>
+      <!-- UTIL bar — full width -->
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:clamp(2px,0.3vh,4px)">
+        <span style="width:${labelW};flex-shrink:0;color:${C.dim};font-size:clamp(8px,0.8vw,10px)">UTIL</span>
+        ${h(LedBar, { value: utilPct, fluid: true, height: parseInt(barH) || 8, color: C.tealHi, warn: 0.8, crit: 0.95, segments: 30 })}
+        <span style="width:${valW};flex-shrink:0;text-align:right;color:${C.white};font-size:clamp(8px,0.8vw,10px)">
+          ${hasData ? `${gpu.gpu_util}%` : '--'}
+        </span>
+      </div>
 
-      <!-- VRAM bar -->
-      <span style="display:flex;align-items:center;gap:4px;flex-shrink:0">
-        <span style="color:${C.dim};font-size:10px">VRAM</span>
-        ${h(LedBar, { value: vramPct, width: 70, height: 8, color: C.purpleHi, warn: 0.8, crit: 0.95 })}
-        <span style="color:${C.white};min-width:36px;font-size:10px">
+      <!-- VRAM bar — full width -->
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="width:${labelW};flex-shrink:0;color:${C.dim};font-size:clamp(8px,0.8vw,10px)">VRAM</span>
+        ${h(LedBar, { value: vramPct, fluid: true, height: parseInt(barH) || 8, color: C.purpleHi, warn: 0.8, crit: 0.95, segments: 30 })}
+        <span style="width:${valW};flex-shrink:0;text-align:right;color:${C.white};font-size:clamp(8px,0.8vw,10px)">
           ${hasData && gpu.vram_used_gb != null ? fmt(gpu.vram_used_gb, 1) : '--'}/${gpu.vram_total_gb || '--'}G
         </span>
-      </span>
-
-      <!-- UTIL bar -->
-      <span style="display:flex;align-items:center;gap:4px;flex-shrink:0">
-        <span style="color:${C.dim};font-size:10px">UTIL</span>
-        ${h(LedBar, { value: utilPct, width: 50, height: 8, color: C.tealHi, warn: 0.8, crit: 0.95 })}
-      </span>
+      </div>
     </div>
   `;
 }
@@ -387,8 +382,8 @@ function GpuRow({ gpu }) {
 function GpuSection({ gpus, show }) {
   if (!show || !gpus || gpus.length === 0) return null;
   return html`
-    <div style="border-top:1px solid ${C.border}">
-      ${gpus.map(g => h(GpuRow, { key: g.id, gpu: g }))}
+    <div style="border-top:1px solid ${C.border};flex-shrink:0">
+      ${gpus.map(g => h(GpuRow, { key: g.id || g.index, gpu: g }))}
     </div>
   `;
 }
@@ -396,7 +391,6 @@ function GpuSection({ gpus, show }) {
 // ─── ConnectionOverlay ───────────────────────────────────────────────────────
 function ConnectionOverlay({ lastUpdate }) {
   const [flash, setFlash] = useState(false);
-
   useEffect(() => {
     const id = setInterval(() => setFlash(f => !f), 600);
     return () => clearInterval(id);
@@ -404,19 +398,15 @@ function ConnectionOverlay({ lastUpdate }) {
 
   return html`
     <div style="
-      position: absolute;
-      inset: 0;
-      background: ${C.bg}cc;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      z-index: 100;
-      border: 2px solid ${flash ? C.red : C.borderDim};
+      position:absolute;inset:0;
+      background:${C.bg}cc;
+      display:flex;flex-direction:column;align-items:center;justify-content:center;
+      z-index:100;
+      border:2px solid ${flash ? C.red : C.borderDim};
     ">
-      <div style="color:${C.red};font-size:18px;letter-spacing:3px;font-weight:bold">CONNECTION LOST</div>
-      <div style="color:${C.dim};font-size:11px;margin-top:8px">last update: ${timeSince(lastUpdate)} ago</div>
-      <div style="color:${C.dim};font-size:11px;margin-top:4px">retrying...</div>
+      <div style="color:${C.red};font-size:clamp(14px,2vw,22px);letter-spacing:3px;font-weight:bold">CONNECTION LOST</div>
+      <div style="color:${C.dim};font-size:clamp(9px,1vw,13px);margin-top:8px">last update: ${timeSince(lastUpdate)} ago</div>
+      <div style="color:${C.dim};font-size:clamp(9px,1vw,13px);margin-top:4px">retrying...</div>
     </div>
   `;
 }
@@ -425,12 +415,12 @@ function ConnectionOverlay({ lastUpdate }) {
 function Footer({ config }) {
   return html`
     <div style="
-      padding: 4px 10px;
-      border-top: 1px solid ${C.borderDim};
-      font-size: 9px;
-      color: ${C.dimmer};
-      display: flex;
-      justify-content: space-between;
+      padding: clamp(2px,0.3vh,5px) clamp(6px,0.8vw,12px);
+      border-top:1px solid ${C.borderDim};
+      font-size:clamp(7px,0.75vw,10px);
+      color:${C.dimmer};
+      display:flex;justify-content:space-between;
+      flex-shrink:0;
     ">
       <span>PROXMOX STATUS PANEL</span>
       <span>${config ? config.panel_subtitle : 'PROXMOX'}</span>
@@ -462,22 +452,17 @@ function computeFlicker(lxcs, prev) {
 
 // ─── App ─────────────────────────────────────────────────────────────────────
 function App() {
-  const [status, setStatus] = useState(null);
-  const [config, setConfig] = useState(null);
+  const [status,     setStatus]     = useState(null);
+  const [config,     setConfig]     = useState(null);
   const [lastUpdate, setLastUpdate] = useState(null);
-  const [failCount, setFailCount] = useState(0);
-  const flickerRef = useRef({});   // vmid → brightness 0–1
-  const lxcsRef = useRef([]);
+  const [failCount,  setFailCount]  = useState(0);
+  const flickerRef = useRef({});
+  const lxcsRef    = useRef([]);
 
-  // Fetch config once
   useEffect(() => {
-    fetch('/api/config')
-      .then(r => r.json())
-      .then(setConfig)
-      .catch(() => {});
+    fetch('/api/config').then(r => r.json()).then(setConfig).catch(() => {});
   }, []);
 
-  // Poll status
   const poll = useCallback(async () => {
     try {
       const res = await fetch('/api/status');
@@ -498,7 +483,6 @@ function App() {
     return () => clearInterval(id);
   }, [poll]);
 
-  // Flicker engine — 80ms, uses ref to avoid re-renders
   useEffect(() => {
     const id = setInterval(() => {
       flickerRef.current = computeFlicker(lxcsRef.current, flickerRef.current);
@@ -507,22 +491,30 @@ function App() {
   }, []);
 
   const disconnected = failCount >= 3;
-  const lxcs = status ? (status.lxcs || []) : [];
-  const gpus = status ? (status.gpus || []) : [];
-  const cols = config ? (config.lxc_grid_cols || 6) : 6;
+  const lxcs     = status ? (status.lxcs || []) : [];
+  const gpus     = status ? (status.gpus || []) : [];
+  const cols     = config ? (config.lxc_grid_cols || 6) : 6;
   const showGpus = config ? config.show_gpus : false;
 
   return html`
-    <div style="width:100%;max-width:900px;position:relative">
-      <!-- Connection overlay -->
-      ${disconnected ? h(ConnectionOverlay, { lastUpdate }) : null}
-
-      <!-- Panel -->
+    <div style="
+      width:100vw; height:100vh;
+      display:flex; flex-direction:column;
+      background:${C.bg};
+      padding:clamp(4px,0.5vw,10px);
+      box-sizing:border-box;
+    ">
       <div style="
-        background: ${C.panel};
-        border: 1px solid ${C.border};
-        box-shadow: 0 0 30px #000a;
+        flex:1;
+        display:flex;flex-direction:column;
+        background:${C.panel};
+        border:1px solid ${C.border};
+        box-shadow:0 0 40px #000c;
+        overflow:hidden;
+        position:relative;
+        min-height:0;
       ">
+        ${disconnected ? h(ConnectionOverlay, { lastUpdate }) : null}
         ${h(HeaderBar, { node: status ? status.node : null, lxcs, config })}
         ${h(LxcGrid, { lxcs, cols, flickerRef })}
         ${h(GpuSection, { gpus, show: showGpus })}
