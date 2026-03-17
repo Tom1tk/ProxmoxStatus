@@ -15,7 +15,6 @@ const DEFAULTS = {
   port: 3000,
   poll_interval_ms: 5000,
   lxc_names: {},
-  lxc_order: [],
   gpus: [],
   show_gpus: false,
   max_net_mbps: 1000,
