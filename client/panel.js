@@ -271,6 +271,7 @@ function LxcCell({ lxc, flickerRef }) {
         display: flex;
         align-items: center;
         justify-content: center;
+        position: relative;
       ">
         <div style="
           width: 60%;
@@ -278,7 +279,18 @@ function LxcCell({ lxc, flickerRef }) {
           border-radius: 4px;
           background: ${lampColor}${isRunning ? '30' : '10'};
           border: 1px solid ${lampColor}${isRunning ? '80' : '20'};
-        "></div>
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        ">
+          <span style="
+            font-size: 8px;
+            color: ${isRunning ? lampColor : C.dimmer};
+            opacity: 0.85;
+            letter-spacing: 0;
+            user-select: none;
+          ">${lxc.vmid}</span>
+        </div>
       </div>
 
       <!-- Name strip -->
@@ -293,7 +305,7 @@ function LxcCell({ lxc, flickerRef }) {
         overflow: hidden;
         text-overflow: ellipsis;
       ">
-        ${(lxc.display_name || lxc.name || lxc.vmid).slice(0, 6)}
+        ${lxc.display_name || lxc.name || lxc.vmid}
       </div>
     </div>
   `;
