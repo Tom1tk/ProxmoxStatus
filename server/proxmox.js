@@ -60,42 +60,26 @@ class ProxmoxClient {
     const headers = { Authorization: cfg.api_token };
     const base = `${cfg.proxmox_host}/api2/json/nodes/${cfg.proxmox_node}`;
 
-    const [nodeStatus, lxcList, storageList] = await Promise.all([
+    const [nodeStatus, lxcList, rrdData] = await Promise.all([
       this._get(`${base}/status`, headers, agent),
       this._get(`${base}/lxc`, headers, agent),
-      this._get(`${base}/storage`, headers, agent),
+      this._get(`${base}/rrddata?timeframe=hour&cf=AVERAGE`, headers, agent),
     ]);
 
     // Node metrics
     const ns = nodeStatus.data;
     const now = Date.now();
 
-    // Network rate (cumulative bytes → bytes/s delta)
-    let netIn = 0, netOut = 0;
-    if (this._prevNet) {
-      const dt = (now - this._prevNet.ts) / 1000;
-      if (dt > 0) {
-        netIn = Math.max(0, (ns.netin - this._prevNet.netin) / dt);
-        netOut = Math.max(0, (ns.netout - this._prevNet.netout) / dt);
-      }
-    }
-    this._prevNet = { netin: ns.netin, netout: ns.netout, ts: now };
+    // Network rate from rrddata (already in bytes/s)
+    const rrdEntries = rrdData.data || [];
+    const lastRrd = rrdEntries[rrdEntries.length - 1] || {};
+    const netIn = lastRrd.netin || 0;
+    const netOut = lastRrd.netout || 0;
 
     // Disk usage from storage
-    let diskUsed = 0, diskTotal = 0;
-    for (const s of (storageList.data || [])) {
-      if (s.content && s.content.includes('rootdir')) {
-        diskUsed += s.disk || 0;
-        diskTotal += s.maxdisk || 0;
-      }
-    }
-    if (diskTotal === 0) {
-      // fallback: sum all
-      for (const s of (storageList.data || [])) {
-        diskUsed += s.disk || 0;
-        diskTotal += s.maxdisk || 0;
-      }
-    }
+    // Use rootfs from node status (most reliable across Proxmox setups)
+    const diskUsed = ns.rootfs ? ns.rootfs.used : 0;
+    const diskTotal = ns.rootfs ? ns.rootfs.total : 0;
 
     // CPU temp
     const cpuTemp = this._readCpuTemp();
