@@ -158,16 +158,8 @@ class ProxmoxClient {
       };
     }).filter(Boolean);
 
-    // Sort by lxc_order
-    const order = cfg.lxc_order || [];
-    items.sort((a, b) => {
-      const ia = order.indexOf(a.vmid);
-      const ib = order.indexOf(b.vmid);
-      if (ia === -1 && ib === -1) return Number(a.vmid) - Number(b.vmid);
-      if (ia === -1) return 1;
-      if (ib === -1) return -1;
-      return ia - ib;
-    });
+    // Sort by vmid numerically — new LXCs appear automatically in the right position
+    items.sort((a, b) => Number(a.vmid) - Number(b.vmid));
 
     return items;
   }
