@@ -1,19 +1,16 @@
 'use strict';
 
 const https = require('https');
-const fs = require('fs');
-const { exec } = require('child_process');
 const fetch = require('node-fetch');
 const { getConfig, getDisplayName } = require('./config');
 
 class ProxmoxClient {
   constructor() {
     this._cache = null;
-    this._prevNet = null;       // { netin, netout, ts }
-    this._prevDisk = {};        // vmid → { diskread, diskwrite }
+    this._prevNet = null;
+    this._prevDisk = {};
     this._stale = false;
     this._staleSince = null;
-    this._gpuAvailable = null;  // null = not yet checked
     this._timer = null;
   }
 
@@ -81,19 +78,13 @@ class ProxmoxClient {
     const diskUsed = ns.rootfs ? ns.rootfs.used : 0;
     const diskTotal = ns.rootfs ? ns.rootfs.total : 0;
 
-    // CPU temp
-    const cpuTemp = this._readCpuTemp();
-
     // LXC stats
     const lxcs = await this._fetchLxcs(lxcList.data || [], headers, agent, base);
-
-    // GPU data
-    const gpus = await this._fetchGpus();
 
     return {
       timestamp: now,
       node: {
-        hostname: ns.pveversion ? cfg.proxmox_node : (ns.nodename || cfg.proxmox_node),
+        hostname: ns.nodename || cfg.proxmox_node,
         cpu: ns.cpu || 0,
         mem_used: ns.memory ? ns.memory.used : 0,
         mem_total: ns.memory ? ns.memory.total : 0,
@@ -101,11 +92,9 @@ class ProxmoxClient {
         disk_total: diskTotal,
         net_in: netIn,
         net_out: netOut,
-        cpu_temp: cpuTemp,
         uptime: ns.uptime || 0,
       },
       lxcs,
-      gpus,
     };
   }
 
@@ -164,69 +153,6 @@ class ProxmoxClient {
     return items;
   }
 
-  // ─── GPU ───────────────────────────────────────────────────────────────────
-
-  async _fetchGpus() {
-    const cfg = getConfig();
-    if (!cfg.show_gpus) return [];
-
-    // Check nvidia-smi availability once
-    if (this._gpuAvailable === null) {
-      this._gpuAvailable = await this._checkNvidiaSmi();
-      console.log(`[proxmox] nvidia-smi available: ${this._gpuAvailable}`);
-    }
-
-    if (this._gpuAvailable) {
-      try {
-        return await this._fetchNvidiaGpus();
-      } catch (e) {
-        console.warn('[proxmox] nvidia-smi error:', e.message);
-      }
-    }
-
-    // Fallback: static config with null live values
-    return (cfg.gpus || []).map(g => ({
-      id: g.id,
-      display_name: g.display_name,
-      vram_used_gb: null,
-      vram_total_gb: g.vram_total_gb,
-      gpu_util: null,
-      temp: null,
-      process: null,
-    }));
-  }
-
-  _checkNvidiaSmi() {
-    return new Promise(resolve => {
-      exec('which nvidia-smi', err => resolve(!err));
-    });
-  }
-
-  _fetchNvidiaGpus() {
-    return new Promise((resolve, reject) => {
-      const query = 'index,name,memory.used,memory.total,utilization.gpu,temperature.gpu';
-      exec(`nvidia-smi --query-gpu=${query} --format=csv,noheader,nounits`, (err, stdout) => {
-        if (err) return reject(err);
-        const cfg = getConfig();
-        const lines = stdout.trim().split('\n').filter(Boolean);
-        const gpus = lines.map((line, i) => {
-          const parts = line.split(',').map(s => s.trim());
-          const cfgGpu = (cfg.gpus || [])[i] || {};
-          return {
-            id: cfgGpu.id || `gpu${i}`,
-            display_name: cfgGpu.display_name || parts[1] || `GPU ${i}`,
-            vram_used_gb: parseFloat(parts[2]) / 1024 || null,
-            vram_total_gb: parseFloat(parts[3]) / 1024 || cfgGpu.vram_total_gb || null,
-            gpu_util: parseInt(parts[4]) || 0,
-            temp: parseInt(parts[5]) || null,
-            process: null, // would need separate query
-          };
-        });
-        resolve(gpus);
-      });
-    });
-  }
-
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
   async _get(url, headers, agent) {
@@ -235,14 +161,6 @@ class ProxmoxClient {
     return res.json();
   }
 
-  _readCpuTemp() {
-    try {
-      const raw = fs.readFileSync('/sys/class/thermal/thermal_zone0/temp', 'utf8');
-      return parseInt(raw.trim()) / 1000;
-    } catch {
-      return null;
-    }
-  }
 }
 
 module.exports = ProxmoxClient;
