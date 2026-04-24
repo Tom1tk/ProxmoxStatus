@@ -519,7 +519,8 @@ function relTime(ms) {
 }
 
 // Draw 4-band stacked history chart onto a canvas element
-function drawGpuHistory(canvas, gpuData, powerLimit) {
+// hoverIdx: data index to draw crosshair at (optional)
+function drawGpuHistory(canvas, gpuData, powerLimit, hoverIdx) {
   const ctx = canvas.getContext('2d');
   const W   = canvas.width;
   const H   = canvas.height;
@@ -623,6 +624,40 @@ function drawGpuHistory(canvas, gpuData, powerLimit) {
   ctx.fillText(relTime(ageMs) + ' ago', 3, H - 2);
   ctx.textAlign = 'right';
   ctx.fillText('now', W - 3, H - 2);
+
+  // Crosshair on hover
+  if (hoverIdx != null && hoverIdx >= 0 && hoverIdx < n) {
+    const hx = n === 1 ? 0 : (hoverIdx / (n - 1)) * W;
+
+    ctx.save();
+    ctx.strokeStyle = '#4a4540';
+    ctx.lineWidth   = 0.8;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(hx, 0);
+    ctx.lineTo(hx, H);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+
+    // Dot marker per metric band
+    metrics.forEach((m, mi) => {
+      const y0   = mi * rowH;
+      const data = gpuData[m.key];
+      if (!data || data.length === 0) return;
+      const val = data[Math.min(hoverIdx, data.length - 1)] || 0;
+      const col = m.dynColor ? m.dynColor(val) : m.color;
+      const v   = Math.max(m.min, Math.min(m.max, val));
+      const y   = y0 + rowH - 2 - ((v - m.min) / Math.max(m.max - m.min, 1)) * (rowH - 4);
+      ctx.fillStyle   = col;
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth   = 1;
+      ctx.beginPath();
+      ctx.arc(hx, y, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    });
+  }
 }
 
 // ─── GpuDetailPanel ──────────────────────────────────────────────────────────
@@ -631,6 +666,8 @@ function GpuDetailPanel() {
   const [history,   setHistory]   = useState({});
   const [windowSec, setWindowSec] = useState(300);
   const canvasRefs = useRef({});
+  const dataRefs   = useRef({});   // idx → { gpuData, powerLimit } for hover handler
+  const tooltipRef = useRef({});   // idx → tooltip DOM element
 
   // Live current data — 2s poll
   useEffect(() => {
@@ -664,12 +701,72 @@ function GpuDetailPanel() {
       Object.entries(history).forEach(([idx, gpuData]) => {
         const canvas = canvasRefs.current[idx];
         if (!canvas) return;
-        const gpu = (current.gpus || []).find(g => String(g.index) === idx);
-        drawGpuHistory(canvas, gpuData, gpu ? gpu.power_limit : 200);
+        const gpu        = (current.gpus || []).find(g => String(g.index) === idx);
+        const powerLimit = gpu ? gpu.power_limit : 200;
+        dataRefs.current[idx] = { gpuData, powerLimit };
+        drawGpuHistory(canvas, gpuData, powerLimit);
       });
     });
     return () => cancelAnimationFrame(rafId);
   }, [history, current]);
+
+  function handleCanvasMouseMove(e, idx) {
+    const canvas = canvasRefs.current[idx];
+    const data   = dataRefs.current[idx];
+    if (!canvas || !data || !data.gpuData || !data.gpuData.ts) return;
+    const n = data.gpuData.ts.length;
+    if (n < 2) return;
+
+    const rect     = canvas.getBoundingClientRect();
+    const cssX     = e.clientX - rect.left;
+    const frac     = Math.max(0, Math.min(1, cssX / rect.width));
+    const hoverIdx = Math.round(frac * (n - 1));
+
+    drawGpuHistory(canvas, data.gpuData, data.powerLimit, hoverIdx);
+
+    const tooltip = tooltipRef.current[idx];
+    if (!tooltip) return;
+
+    const i      = Math.min(hoverIdx, n - 1);
+    const ageMs  = Date.now() - data.gpuData.ts[i];
+    const maxPwr = data.powerLimit || 200;
+    const tmpVal  = Math.round(data.gpuData.temp[i]  || 0);
+    const pwrVal  = Math.round(data.gpuData.power[i] || 0);
+    const utilVal = Math.round(data.gpuData.util[i]  || 0);
+    const fanVal  = Math.round(data.gpuData.fan[i]   || 0);
+    const tmpCol  = tempColorForValue(tmpVal);
+
+    tooltip.innerHTML = [
+      `<div style="color:#4a4540;margin-bottom:2px">${relTime(ageMs)} ago</div>`,
+      `<div><span style="color:#4a4540">TEMP  </span><span style="color:${tmpCol}">${tmpVal}°C</span></div>`,
+      `<div><span style="color:#4a4540">PWR   </span><span style="color:${C.tealHi}">${pwrVal}/${Math.round(maxPwr)}W</span></div>`,
+      `<div><span style="color:#4a4540">GPU%  </span><span style="color:${C.greenHi}">${utilVal}%</span></div>`,
+      `<div><span style="color:#4a4540">FAN   </span><span style="color:${C.amberHi}">${fanVal}%</span></div>`,
+    ].join('');
+
+    const ttW    = 115;
+    const ttH    = 94;
+    const OFFSET = 10;
+    let tx = cssX + OFFSET;
+    let ty = (e.clientY - rect.top) - ttH / 2;
+    if (tx + ttW > rect.width - 4) tx = cssX - ttW - OFFSET;
+    tx = Math.max(4, tx);
+    ty = Math.max(4, Math.min(ty, rect.height - ttH - 4));
+
+    tooltip.style.left    = `${tx}px`;
+    tooltip.style.top     = `${ty}px`;
+    tooltip.style.display = 'block';
+  }
+
+  function handleCanvasMouseLeave(idx) {
+    const tooltip = tooltipRef.current[idx];
+    if (tooltip) tooltip.style.display = 'none';
+    const canvas = canvasRefs.current[idx];
+    const data   = dataRefs.current[idx];
+    if (canvas && data && data.gpuData) {
+      drawGpuHistory(canvas, data.gpuData, data.powerLimit);
+    }
+  }
 
   const { gpus, autofan } = current;
   const fs2 = 'clamp(10px,1vw,14px)';
@@ -747,16 +844,29 @@ function GpuDetailPanel() {
 
       <!-- History graphs, one per GPU -->
       ${Object.entries(history).sort(([a],[b]) => Number(a) - Number(b)).map(([idx, gpuData]) => html`
-        <div key=${idx} style="border:1px solid ${C.borderDim};overflow:hidden;flex-shrink:0">
+        <div key=${idx} style="border:1px solid ${C.borderDim};flex-shrink:0">
           <div style="padding:2px 4px;font-size:clamp(8px,0.8vw,11px);color:${C.purpleHi};border-bottom:1px solid ${C.borderDim};background:#00000040;letter-spacing:0.5px">
             ${gpuData.name || 'GPU ' + idx}
           </div>
-          <canvas
-            ref=${el => { if (el) canvasRefs.current[idx] = el; }}
-            style="display:block;width:100%;height:140px"
-            width="1200"
-            height="140"
-          />
+          <div style="position:relative">
+            <canvas
+              ref=${el => { if (el) canvasRefs.current[idx] = el; }}
+              style="display:block;width:100%;height:140px;cursor:crosshair"
+              width="1200"
+              height="140"
+              onMouseMove=${e => handleCanvasMouseMove(e, idx)}
+              onMouseLeave=${() => handleCanvasMouseLeave(idx)}
+            />
+            <div
+              ref=${el => { if (el) tooltipRef.current[idx] = el; }}
+              style="
+                display:none;position:absolute;pointer-events:none;z-index:10;
+                background:#050504ee;border:1px solid ${C.border};
+                padding:4px 8px;font-size:clamp(8px,0.75vw,10px);
+                line-height:1.7;white-space:nowrap;font-family:inherit;
+              "
+            />
+          </div>
         </div>
       `)}
     </div>
