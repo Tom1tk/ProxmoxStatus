@@ -11,7 +11,7 @@ const C = {
   border:    '#3a3530',
   borderDim: '#1e1c18',
   white:     '#d8d0c0',
-  dim:       '#4a4540',
+  dim:       '#7a7570',
   dimmer:    '#252220',
   red:       '#cc1a1a',
   amber:     '#c87010',
