@@ -727,9 +727,11 @@ function GpuDetailPanel() {
     const tooltip = tooltipRef.current[idx];
     if (!tooltip) return;
 
-    const i      = Math.min(hoverIdx, n - 1);
-    const ageMs  = Date.now() - data.gpuData.ts[i];
-    const maxPwr = data.powerLimit || 200;
+    const i       = Math.min(hoverIdx, n - 1);
+    const timeStr = new Date(data.gpuData.ts[i]).toLocaleTimeString('en-US', {
+      hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true,
+    });
+    const maxPwr  = data.powerLimit || 200;
     const tmpVal  = Math.round(data.gpuData.temp[i]  || 0);
     const pwrVal  = Math.round(data.gpuData.power[i] || 0);
     const utilVal = Math.round(data.gpuData.util[i]  || 0);
@@ -737,7 +739,7 @@ function GpuDetailPanel() {
     const tmpCol  = tempColorForValue(tmpVal);
 
     tooltip.innerHTML = [
-      `<div style="color:#4a4540;margin-bottom:2px">${relTime(ageMs)} ago</div>`,
+      `<div style="color:#4a4540;margin-bottom:2px">${timeStr}</div>`,
       `<div><span style="color:#4a4540">TEMP  </span><span style="color:${tmpCol}">${tmpVal}°C</span></div>`,
       `<div><span style="color:#4a4540">PWR   </span><span style="color:${C.tealHi}">${pwrVal}/${Math.round(maxPwr)}W</span></div>`,
       `<div><span style="color:#4a4540">GPU%  </span><span style="color:${C.greenHi}">${utilVal}%</span></div>`,
