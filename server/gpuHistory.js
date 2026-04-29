@@ -185,12 +185,11 @@ function _load() {
 
 // ─── Downsampling ─────────────────────────────────────────────────────────────
 
-// Target point counts per window — keeps canvas rendering fast
+// Target point counts per window — keeps canvas rendering fast.
+// All windows longer than 1h target 360 pts (same visual density as 6h).
 function _maxPoints(windowSeconds) {
-  if (windowSeconds <= 3600)  return Infinity; // ≤1h  : full 2s resolution
-  if (windowSeconds <= 21600) return 360;      // 6h   : ~1 min resolution
-  if (windowSeconds <= 86400) return 48;       // 24h  : 30 min resolution
-  return 84;                                   // 7d   : 2 h  resolution
+  if (windowSeconds <= 3600) return Infinity; // ≤1h : full 2s resolution
+  return 360;                                 // >1h : ~360 pts, same screen density as 6h
 }
 
 // Bucket-mean downsample: averages each metric within equal-width time buckets.
