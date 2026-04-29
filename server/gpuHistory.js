@@ -183,6 +183,41 @@ function _load() {
   }
 }
 
+// ─── Downsampling ─────────────────────────────────────────────────────────────
+
+// Target point counts per window — keeps canvas rendering fast
+function _maxPoints(windowSeconds) {
+  if (windowSeconds <= 3600)  return Infinity; // ≤1h  : full 2s resolution
+  if (windowSeconds <= 21600) return 360;      // 6h   : ~1 min resolution
+  if (windowSeconds <= 86400) return 48;       // 24h  : 30 min resolution
+  return 84;                                   // 7d   : 2 h  resolution
+}
+
+// Bucket-mean downsample: averages each metric within equal-width time buckets.
+// Returns plain arrays of length maxPoints (or the original data if already small enough).
+const DS_KEYS = ['ts', 'temp', 'power', 'util', 'mem', 'fan'];
+
+function _downsample(data, maxPoints) {
+  const n = data.ts ? data.ts.length : 0;
+  if (n === 0 || n <= maxPoints) return data;
+
+  const out        = {};
+  DS_KEYS.forEach(k => { out[k] = new Array(maxPoints); });
+  const bucketSize = n / maxPoints;
+
+  for (let i = 0; i < maxPoints; i++) {
+    const start = Math.floor(i * bucketSize);
+    const end   = Math.min(Math.floor((i + 1) * bucketSize), n);
+    const count = end - start;
+    DS_KEYS.forEach(k => {
+      let sum = 0;
+      for (let j = start; j < end; j++) sum += data[k][j] || 0;
+      out[k][i] = sum / count;
+    });
+  }
+  return out;
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 function getCurrentGpuStats() {
@@ -203,10 +238,12 @@ function getCurrentGpuStats() {
 
 function getHistory(windowSeconds) {
   const n      = Math.ceil((windowSeconds * 1000) / POLL_MS);
+  const maxPts = _maxPoints(windowSeconds);
   const result = {};
   for (const [key, buf] of Object.entries(_bufs)) {
     const d     = _extract(buf, n);
-    result[key] = { name: buf.name, ...d };
+    const down  = isFinite(maxPts) ? _downsample(d, maxPts) : d;
+    result[key] = { name: buf.name, ...down };
   }
   return result;
 }
