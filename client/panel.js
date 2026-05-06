@@ -440,8 +440,7 @@ function LxcGrid({ lxcs, cols, flickerRef, openVmid, setOpenVmid }) {
 // ─── GpuRow ──────────────────────────────────────────────────────────────────
 function GpuRow({ gpu }) {
   const hasData = gpu.gpu_util != null;
-  const vramPct = (gpu.vram_total_gb && gpu.vram_used_gb != null)
-    ? gpu.vram_used_gb / gpu.vram_total_gb : 0;
+  const memPct  = (gpu.mem_util || 0) / 100;
   const utilPct = (gpu.gpu_util || 0) / 100;
   const labelW  = 'clamp(28px,3vw,44px)';
   const valW    = 'clamp(32px,4vw,56px)';
@@ -466,7 +465,6 @@ function GpuRow({ gpu }) {
           <span style="color:${C.white}">${gpu.gpu_util}%</span>
           <span style="color:${C.dim}">util ·</span>
           <span style="color:${gpu.temp >= 80 ? C.red : gpu.temp >= 65 ? C.amberHi : C.white}">${gpu.temp}°C</span>
-          ${gpu.process ? html`<span style="color:${C.dim}">·</span><span style="color:${C.tealHi}">${gpu.process}</span>` : null}
         ` : html`<span style="color:${C.dimmer}">NO DATA</span>`}
       </div>
 
@@ -479,12 +477,12 @@ function GpuRow({ gpu }) {
         </span>
       </div>
 
-      <!-- VRAM bar — full width -->
+      <!-- MEM bar — full width -->
       <div style="display:flex;align-items:center;gap:6px">
-        <span style="width:${labelW};flex-shrink:0;color:${C.dim};font-size:clamp(10px,1vw,13px)">VRAM</span>
-        ${h(LedBar, { value: vramPct, fluid: true, height: parseInt(barH) || 8, color: C.purpleHi, warn: 0.8, crit: 0.95, segments: 30 })}
+        <span style="width:${labelW};flex-shrink:0;color:${C.dim};font-size:clamp(10px,1vw,13px)">MEM</span>
+        ${h(LedBar, { value: memPct, fluid: true, height: parseInt(barH) || 8, color: C.purpleHi, warn: 0.8, crit: 0.95, segments: 30 })}
         <span style="width:${valW};flex-shrink:0;text-align:right;color:${C.white};font-size:clamp(10px,1vw,13px)">
-          ${hasData && gpu.vram_used_gb != null ? fmt(gpu.vram_used_gb, 1) : '--'}/${gpu.vram_total_gb || '--'}G
+          ${hasData ? `${gpu.mem_util}%` : '--'}
         </span>
       </div>
     </div>
@@ -662,7 +660,7 @@ function drawGpuHistory(canvas, gpuData, powerLimit, hoverIdx) {
 
 // ─── GpuDetailPanel ──────────────────────────────────────────────────────────
 function GpuDetailPanel() {
-  const [current,   setCurrent]   = useState({ gpus: [], autofan: null });
+  const [current,   setCurrent]   = useState({ gpus: [] });
   const [history,   setHistory]   = useState({});
   const [windowSec, setWindowSec] = useState(300);
   const canvasRefs = useRef({});
@@ -770,40 +768,12 @@ function GpuDetailPanel() {
     }
   }
 
-  const { gpus, autofan } = current;
+  const gpus = current.gpus || [];
   const fs2 = 'clamp(10px,1vw,14px)';
   const fs3 = 'clamp(9px,0.9vw,13px)';
-  const afCol = autofan
-    ? (autofan.status === 'OK' ? C.greenHi : autofan.status === 'WARN' ? C.amberHi : C.red)
-    : C.dimmer;
-  const afBorder = autofan
-    ? (autofan.status === 'OK' ? C.green : autofan.status === 'WARN' ? C.amber : C.red)
-    : C.dimmer;
 
   return html`
     <div style="padding:clamp(4px,0.5vh,8px) clamp(6px,0.8vw,10px);display:flex;flex-direction:column;gap:clamp(3px,0.4vh,5px)">
-
-      <!-- Autofan status line -->
-      <div style="font-size:${fs2};display:flex;gap:6px;align-items:center;padding-bottom:clamp(2px,0.3vh,4px);border-bottom:1px solid ${C.borderDim};flex-wrap:nowrap;overflow:hidden">
-        <span style="color:${C.dim};flex-shrink:0">AUTOFAN</span>
-        ${autofan ? html`
-          <span style="color:${C.dim}">·</span>
-          <span style="color:${C.dim};flex-shrink:0">hottest:</span>
-          <span style="color:${autofan.hottest != null ? tempColorForValue(autofan.hottest) : C.dim};flex-shrink:0">
-            ${autofan.hottest != null ? autofan.hottest + '°C' : '--'}
-          </span>
-          <span style="color:${C.dim}">fan:</span>
-          <span style="color:${C.amberHi};flex-shrink:0">${autofan.fan != null ? autofan.fan + '%' : '--'}</span>
-          <span style="
-            padding:0 5px;
-            border:1px solid ${afBorder};
-            color:${afCol};
-            font-size:clamp(8px,0.8vw,11px);
-            letter-spacing:1px;
-            flex-shrink:0;
-          ">${autofan.status}</span>
-        ` : html`<span style="color:${C.dimmer}">— NO DATA</span>`}
-      </div>
 
       <!-- Live table -->
       <div style="font-size:${fs3}">
