@@ -42,7 +42,7 @@ function getConfig() {
 function getDisplayName(vmid, rawName) {
   const cfg = loadConfig();
   const name = (cfg.lxc_names && cfg.lxc_names[String(vmid)]) || rawName || String(vmid);
-  return name.length > 10 ? name.slice(0, 10) + '.' : name;
+  return name;
 }
 
 function getPublicConfig() {

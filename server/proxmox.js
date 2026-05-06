@@ -153,10 +153,26 @@ class ProxmoxClient {
     return items;
   }
 
+  // ─── Actions ──────────────────────────────────────────────────────────────
+
+  async executeAction(vmid, action) {
+    const cfg = getConfig();
+    const agent = new https.Agent({ rejectUnauthorized: cfg.verify_ssl });
+    const headers = { Authorization: cfg.api_token };
+    const url = `${cfg.proxmox_host}/api2/json/nodes/${cfg.proxmox_node}/lxc/${vmid}/status/${action}`;
+    return this._post(url, headers, agent);
+  }
+
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
   async _get(url, headers, agent) {
     const res = await fetch(url, { headers, agent });
+    if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+    return res.json();
+  }
+
+  async _post(url, headers, agent) {
+    const res = await fetch(url, { method: 'POST', headers, agent });
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
     return res.json();
   }

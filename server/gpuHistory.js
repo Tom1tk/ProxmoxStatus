@@ -5,20 +5,15 @@ const path = require('path');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const GPU_STATS_FILE = '/mnt/gpu-stats/gpu_stats.txt';
-const AUTOFAN_FILE   = '/mnt/gpu-stats/autofan_stats.txt';
 const PERSIST_PATH   = '/var/lib/dashboard/gpu_history.json';
 const POLL_MS        = 2000;
 const PERSIST_MS     = 5 * 60 * 1000;
 const MAX_SAMPLES    = 302400;   // 7 days at 2s resolution
 
-// GPU indices to suppress from the panel (Quadro M2000 = display card only)
-const HIDDEN_GPU_INDICES = [0];
-
 // ─── Ring buffer state ────────────────────────────────────────────────────────
 // Keyed by String(gpu.index)
 const _bufs = {};
-let _snapshot = [];   // last parsed rows from gpu_stats.txt (visible GPUs only)
-let _autofan  = null;
+let _snapshot = [];   // last parsed rows from gpu_stats.txt
 
 // ─── Buffer helpers ───────────────────────────────────────────────────────────
 
@@ -74,6 +69,7 @@ function _extract(buf, n) {
 
 // ─── File parsers ─────────────────────────────────────────────────────────────
 
+// CSV format: index,name,temp,power_draw,power_limit,gpu_util,mem_util,fan_pct
 function _parseGpuStats() {
   try {
     const text = fs.readFileSync(GPU_STATS_FILE, 'utf8');
@@ -81,7 +77,7 @@ function _parseGpuStats() {
       const p = line.split(',').map(s => s.trim());
       if (p.length < 7) return null;
       const index = parseInt(p[0]);
-      if (isNaN(index) || HIDDEN_GPU_INDICES.includes(index)) return null;
+      if (isNaN(index)) return null;
       return {
         index,
         name:        p[1],
@@ -90,27 +86,11 @@ function _parseGpuStats() {
         power_limit: parseFloat(p[4]) || 0,
         gpu_util:    parseFloat(p[5]) || 0,
         mem_util:    parseFloat(p[6]) || 0,
+        fan_pct:     parseFloat(p[7]) || 0,
       };
     }).filter(Boolean);
   } catch {
     return [];
-  }
-}
-
-function _parseAutofan() {
-  try {
-    const line = fs.readFileSync(AUTOFAN_FILE, 'utf8').trim();
-    const hm   = line.match(/hottest=(\d+)C/);
-    const fm   = line.match(/fan=(\d+)%/);
-    const sm   = line.match(/\d{2}:\d{2}:\d{2}\s+(\w+)/);
-    return {
-      raw:     line,
-      hottest: hm ? parseInt(hm[1]) : null,
-      fan:     fm ? parseInt(fm[1]) : null,
-      status:  sm ? sm[1].toUpperCase() : 'UNKNOWN',
-    };
-  } catch {
-    return null;
   }
 }
 
@@ -119,15 +99,12 @@ function _parseAutofan() {
 function _poll() {
   const now  = Date.now();
   const gpus = _parseGpuStats();
-  _autofan   = _parseAutofan();
   _snapshot  = gpus;
-
-  const fanPct = (_autofan && _autofan.fan != null) ? _autofan.fan : 0;
 
   for (const gpu of gpus) {
     const key = String(gpu.index);
     if (!_bufs[key]) _bufs[key] = _makeBuffer(gpu.name);
-    _push(_bufs[key], now, gpu.temp, gpu.power_draw, gpu.gpu_util, gpu.mem_util, fanPct);
+    _push(_bufs[key], now, gpu.temp, gpu.power_draw, gpu.gpu_util, gpu.mem_util, gpu.fan_pct);
   }
 }
 
@@ -229,9 +206,8 @@ function getCurrentGpuStats() {
       power_limit: gpu.power_limit,
       gpu_util:    gpu.gpu_util,
       mem_util:    gpu.mem_util,
-      fan_pct:     (_autofan && _autofan.fan != null) ? _autofan.fan : null,
+      fan_pct:     gpu.fan_pct,
     })),
-    autofan: _autofan,
   };
 }
 
@@ -252,7 +228,7 @@ function startPolling() {
   _poll();
   setInterval(_poll, POLL_MS);
   setInterval(_persist, PERSIST_MS);
-  console.log('[gpuHistory] polling started (hidden indices:', HIDDEN_GPU_INDICES.join(', '), ')');
+  console.log('[gpuHistory] polling started');
 }
 
 module.exports = { startPolling, getCurrentGpuStats, getHistory };
