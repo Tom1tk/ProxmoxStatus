@@ -65,6 +65,104 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: Date.now() });
 });
 
+// ─── Agent-facing convenience endpoints ────────────────────────────────────
+
+// Manifest — call this first to discover all endpoints and their semantics
+app.get('/api', (req, res) => {
+  res.json({
+    version: 1,
+    description: 'Proxmox Status Panel — Agent API',
+    note: 'All GET endpoints return cached data (staleness indicated by stale/stale_since fields). POST actions are live.',
+    endpoints: [
+      {
+        method: 'GET', path: '/api',
+        description: 'This manifest — lists all available endpoints',
+      },
+      {
+        method: 'GET', path: '/api/status',
+        description: 'Full snapshot: node metrics, all LXC containers, and GPU stats combined',
+      },
+      {
+        method: 'GET', path: '/api/node',
+        description: 'Node-only metrics: cpu, memory, disk, network rates, uptime, cpu_temp',
+      },
+      {
+        method: 'GET', path: '/api/lxcs',
+        description: 'All LXC containers with status, cpu%, mem%, disk I/O rates',
+      },
+      {
+        method: 'GET', path: '/api/lxc/:vmid',
+        description: 'Single LXC container by vmid (e.g. /api/lxc/101)',
+        params: { vmid: 'numeric container ID' },
+      },
+      {
+        method: 'POST', path: '/api/lxc/:vmid/:action',
+        description: 'Control an LXC container',
+        params: {
+          vmid: 'numeric container ID',
+          action: 'start | shutdown | reboot',
+        },
+        returns: '{ success: bool, data: <proxmox task ID> } or { success: false, error: string }',
+      },
+      {
+        method: 'GET', path: '/api/gpu/current',
+        description: 'Live GPU stats: util%, temp°C, power_w, mem_util%, fan%',
+      },
+      {
+        method: 'GET', path: '/api/gpu/history',
+        description: 'GPU history as downsampled time-series; ≤1h = full res, >1h = 360-point buckets',
+        query: { window: 'seconds of history (60–604800, default 300)' },
+      },
+      {
+        method: 'GET', path: '/api/config',
+        description: 'Public panel configuration (title, GPU layout, grid columns)',
+      },
+      {
+        method: 'GET', path: '/health',
+        description: 'Health check — { status: "ok", timestamp: <epoch ms> }',
+      },
+    ],
+  });
+});
+
+// Node-only — thin slice of /api/status, no LXC/GPU noise
+app.get('/api/node', (req, res) => {
+  const px = client.getCachedStatus();
+  const temp = host.getTempCache();
+  res.json({
+    stale: px.stale,
+    stale_since: px.stale_since || null,
+    timestamp: px.timestamp,
+    node: px.node ? { ...px.node, cpu_temp: temp ? temp.package_temp : null } : null,
+  });
+});
+
+// LXC list — thin slice of /api/status
+app.get('/api/lxcs', (req, res) => {
+  const px = client.getCachedStatus();
+  res.json({
+    stale: px.stale,
+    stale_since: px.stale_since || null,
+    timestamp: px.timestamp,
+    lxcs: px.lxcs || [],
+  });
+});
+
+// Single LXC — filtered from cache, no extra fetch
+app.get('/api/lxc/:vmid', (req, res) => {
+  const px = client.getCachedStatus();
+  const lxc = (px.lxcs || []).find(l => l.vmid === req.params.vmid);
+  if (!lxc) {
+    return res.status(404).json({ success: false, error: `LXC ${req.params.vmid} not found` });
+  }
+  res.json({
+    stale: px.stale,
+    stale_since: px.stale_since || null,
+    timestamp: px.timestamp,
+    lxc,
+  });
+});
+
 // Start
 const cfg = getConfig();
 const port = cfg.port || 3000;

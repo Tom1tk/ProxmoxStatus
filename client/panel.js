@@ -496,13 +496,14 @@ const WINDOWS = [
   { label: '30m', seconds: 1800 },
   { label: '1h',  seconds: 3600 },
   { label: '6h',  seconds: 21600 },
-  { label: '24h', seconds: 86400 },
+  { label: '12h', seconds: 43200 },
+  { label: '1d',  seconds: 86400 },
   { label: '7d',  seconds: 604800 },
 ];
 
 function tempColorForValue(v) {
-  if (v <= 50) return C.greenHi;
-  if (v <= 70) return C.amberHi;
+  if (v <= 60) return C.greenHi;
+  if (v <= 89) return C.amberHi;
   return C.red;
 }
 
@@ -535,10 +536,10 @@ function drawGpuHistory(canvas, gpuData, powerLimit, hoverIdx) {
     return;
   }
 
-  const maxPwr = powerLimit || 200;
+  const maxPwr = powerLimit || 375;
   const metrics = [
     { key: 'temp',  label: 'TEMP',  min: 0, max: 100,   color: null,     unit: '°C', dynColor: v => tempColorForValue(v) },
-    { key: 'power', label: 'PWR',   min: 0, max: maxPwr, color: C.tealHi, unit: 'W'  },
+    { key: 'power', label: 'PWR',   min: 0, max: Math.max(maxPwr, 375), color: C.tealHi, unit: 'W'  },
     { key: 'util',  label: 'GPU%',  min: 0, max: 100,   color: C.greenHi, unit: '%'  },
     { key: 'fan',   label: 'FAN',   min: 0, max: 100,   color: C.amberHi, unit: '%'  },
   ];
@@ -729,7 +730,7 @@ function GpuDetailPanel() {
     const timeStr = new Date(data.gpuData.ts[i]).toLocaleTimeString('en-US', {
       hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true,
     });
-    const maxPwr  = data.powerLimit || 200;
+    const maxPwr  = Math.max(data.powerLimit || 375, 375);
     const tmpVal  = Math.round(data.gpuData.temp[i]  || 0);
     const pwrVal  = Math.round(data.gpuData.power[i] || 0);
     const utilVal = Math.round(data.gpuData.util[i]  || 0);
