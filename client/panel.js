@@ -104,7 +104,7 @@ function LedBar({ value, segments = 20, warn = 0.7, crit = 0.9, width = 80, heig
 }
 
 // ─── NetTicker ───────────────────────────────────────────────────────────────
-function NetTicker({ mbps, maxMbps, label }) {
+function NetTicker({ mbps, maxMbps, label, compact }) {
   const dotsRef = useRef([]);
   const mbpsRef = useRef(mbps);
   const maxRef  = useRef(maxMbps);
@@ -139,87 +139,294 @@ function NetTicker({ mbps, maxMbps, label }) {
   );
 
   return html`
-    <span style="display:inline-flex;align-items:center;gap:4px;font-size:clamp(11px,1.1vw,15px);color:${C.dim}">
+    <span style="display:inline-flex;align-items:center;gap:${compact ? '2px' : '4px'};font-size:${compact ? '10px' : 'clamp(11px,1.1vw,15px)'};color:${C.dim}">
       <span>${label}</span>
-      <span style="display:inline-flex;align-items:center">${dots}</span>
-      <span style="color:${C.white};min-width:38px;text-align:right">${fmt(mbps, 2)}<span style="color:${C.dim}">MB/s</span></span>
+      <span style="display:inline-flex;align-items:center">${compact ? dots.slice(0,4) : dots}</span>
+      <span style="color:${C.white};min-width:${compact ? '28px' : '38px'};text-align:right">${fmt(mbps, 2)}<span style="color:${C.dim}">${compact ? 'M' : 'MB/s'}</span></span>
     </span>
   `;
 }
 
-// ─── HeaderBar ───────────────────────────────────────────────────────────────
-function HeaderBar({ node, lxcs, config }) {
-  if (!node) return html`<div style="height:2.4em;border-bottom:1px solid ${C.borderDim}"></div>`;
+// Measured height of the dashboard bar — applied to panes bar to guarantee identical height.
+let _dashBarH = 0;
 
-  const cpuPct    = node.cpu || 0;
-  const memPct    = node.mem_total ? node.mem_used / node.mem_total : 0;
-  const netInMbps = bytesToMbps(node.net_in);
-  const netOutMbps= bytesToMbps(node.net_out);
-  const maxMbps   = config ? config.max_net_mbps : 1000;
+// ─── HeaderBar ───────────────────────────────────────────────────────────────
+// Dual-mode: dashboard metrics row OR panes tab strip, toggled by the ⊞ PANES button.
+function HeaderBar({ node, lxcs, config, view, setView, paneStates, onTabClick, onTabClose }) {
+  const vw     = window.innerWidth;
+  const narrow = vw < 480;   // phone portrait
+  const tiny   = vw < 360;   // very small phone
+  const fs     = narrow ? '11px' : 'clamp(11px,1.15vw,16px)';
+
+  // Ref lives on the dashboard bar; after every dashboard render we record its height
+  // so the panes bar can match it exactly.
+  const barRef = useRef(null);
+  useEffect(() => {
+    if (view !== 'panes' && barRef.current) {
+      const h = barRef.current.offsetHeight;
+      if (h > 0) _dashBarH = h;
+    }
+  });
+
+  const [prefixFlash, setPrefixFlash] = useState(false);
+  function sendTmuxPrefix() {
+    if (_activeTerm.send) {
+      _activeTerm.send('\x02');  // Ctrl+B
+      setPrefixFlash(true);
+      setTimeout(() => setPrefixFlash(false), 500);
+    }
+  }
+
+  // Toggle button — identical styles in both modes; only marginLeft differs per context
+  const toggleBtnStyle = {
+    flexShrink:    0,
+    background:    view === 'panes' ? C.amber + '30' : 'transparent',
+    border:        `1px solid ${view === 'panes' ? C.amber : C.borderDim}`,
+    color:         view === 'panes' ? C.amberHi : C.dim,
+    fontFamily:    'inherit',
+    fontSize:      narrow ? '10px' : 'clamp(9px,0.9vw,12px)',
+    padding:       narrow ? '3px 5px' : '2px 8px',
+    cursor:        'pointer',
+    letterSpacing: narrow ? 0 : '0.5px',
+    lineHeight:    1,
+  };
+  const mkToggle = (ml) => h('button', {
+    onClick: () => setView && setView(view === 'panes' ? 'dashboard' : 'panes'),
+    title:   view === 'panes' ? 'Switch to dashboard' : 'Open console panes',
+    style:   { ...toggleBtnStyle, marginLeft: ml },
+  }, view === 'panes' ? '◼' : '⊞');
+
+  // Shared bar padding — dashboard uses both axes; panes bar uses only horizontal
+  // (vertical is 0 so tabs can fill the full measured height edge-to-edge)
+  const barPadH = narrow ? 'clamp(4px,0.6vw,10px)' : 'clamp(6px,0.8vw,12px)';
+  const barPad  = narrow
+    ? `6px ${barPadH}`
+    : `clamp(8px,1vh,16px) ${barPadH}`;
+
+  // ─── Panes mode: scrollable tab strip ────────────────────────────────────
+  if (view === 'panes') {
+    // ROOT shell entry is pinned at position 0; real LXCs sorted by vmid after it
+    const sorted = [NODE_ENTRY, ...[...lxcs].sort((a, b) => Number(a.vmid) - Number(b.vmid))];
+    const tabMinW = narrow ? 42 : 50;
+    // Panes bar: exact same height as dashboard (measured), zero vertical padding
+    // so tabs run edge-to-edge. PANES button stretches to full height like a sidebar.
+    // Only horizontal padding matches the dashboard bar's left/right inset.
+    return h('div', {
+      style: {
+        display:       'flex',
+        alignItems:    'center',
+        height:        _dashBarH > 0 ? `${_dashBarH}px` : undefined,
+        paddingLeft:   barPadH,
+        paddingRight:  barPadH,
+        paddingTop:    0,
+        paddingBottom: 0,
+        boxSizing:     'border-box',
+        borderBottom:  `1px solid ${C.border}`,
+        background:    C.panel,
+        fontSize:      fs,
+        flexWrap:      'nowrap',
+        flexShrink:    0,
+      },
+    },
+      // PANES tmux-prefix button — stretches full bar height, text/size matches dashboard title
+      h('button', {
+        onClick:  sendTmuxPrefix,
+        title:    'Send tmux prefix (Ctrl+B)',
+        style: {
+          alignSelf:    'stretch',
+          display:      'flex',
+          alignItems:   'center',
+          color:        prefixFlash ? C.white : C.amberHi,
+          background:   prefixFlash ? C.amber + '55' : 'transparent',
+          fontWeight:   'bold',
+          flexShrink:   0,
+          letterSpacing: narrow ? 0 : '1px',
+          fontSize:     fs,                          // matches dashboard title font
+          paddingRight: narrow ? '6px' : '8px',
+          paddingLeft:  0,
+          borderTop:    'none',
+          borderLeft:   'none',
+          borderBottom: 'none',
+          borderRight:  `1px solid ${C.borderDim}`,
+          marginRight:  narrow ? '4px' : '6px',
+          cursor:       'pointer',
+          fontFamily:   'inherit',
+          transition:   'color 0.15s, background 0.15s',
+        },
+      }, 'PANES'),
+
+      // Scrollable tab row — height:100% fills the full bar edge-to-edge.
+      // Touch-draggable, scrollbar hidden.
+      h('div', {
+        className: 'panes-tabs',
+        style: {
+          flex:              1,
+          height:            '100%',
+          display:           'flex',
+          overflowX:         'auto',
+          overflowY:         'hidden',
+          minWidth:          0,
+          gap:               '1px',
+          scrollbarWidth:    'none',
+          WebkitOverflowScrolling: 'touch',
+        },
+      },
+        ...sorted.map(lxc => {
+          const state       = (paneStates && paneStates[lxc.vmid]) || 'closed';
+          const isRunning   = lxc.status === 'running';
+          const connected   = state === 'visible' || state === 'minimized';
+          const bg          = state === 'visible'   ? C.amber + '44'
+                            : state === 'minimized' ? C.amber + '20'
+                            : 'transparent';
+          const nameColor   = state === 'visible'   ? C.white : C.dim;
+          // ROOT shell: show "000" as id and skip vowel-removal formatting
+          const displayId   = lxc._isNode ? '000' : lxc.vmid;
+          const displayName = lxc._isNode
+            ? 'ROOT'
+            : fmtTabName(lxc.display_name || lxc.name || lxc.vmid);
+
+          return h('button', {
+            key:     lxc.vmid,
+            onClick: () => onTabClick && onTabClick(lxc.vmid),
+            style: {
+              flex:           `0 0 ${tabMinW}px`,
+              minWidth:       `${tabMinW}px`,
+              position:       'relative',
+              display:        'flex',
+              flexDirection:  'column',
+              alignItems:     'center',
+              justifyContent: 'center',
+              background:     bg,
+              border:         'none',
+              borderRight:    `1px solid ${C.borderDim}`,
+              borderBottom:   `3px solid ${isRunning ? C.green : C.dimmer}`,
+              padding:        connected ? '0 18px 0 2px' : '0 2px',
+              cursor:         'pointer',
+              fontFamily:     'inherit',
+              overflow:       'hidden',
+              color:          nameColor,
+              height:         '100%',
+              boxSizing:      'border-box',
+            },
+          },
+            h('span', {
+              style: {
+                fontSize: narrow ? '9px' : 'clamp(9px,0.8vw,11px)',
+                color: C.dim, lineHeight: 1, marginBottom: '2px', flexShrink: 0,
+              },
+            }, displayId),
+            h('span', {
+              style: {
+                width: '100%', overflow: 'hidden', textOverflow: 'clip',
+                whiteSpace: 'nowrap', textAlign: 'center',
+                fontSize: narrow ? '10px' : 'clamp(10px,1vw,13px)',
+                lineHeight: 1, color: nameColor,
+              },
+            }, displayName),
+            connected ? h('span', {
+              onClick: e => { e.stopPropagation(); onTabClose && onTabClose(lxc.vmid); },
+              style: {
+                position: 'absolute', top: '2px', right: '4px',
+                fontSize: narrow ? '13px' : 'clamp(13px,1.3vw,17px)',
+                color: C.dim, cursor: 'pointer', lineHeight: 1, padding: '1px 2px',
+              },
+            }, '×') : null,
+          );
+        }),
+      ),
+
+      mkToggle(barPadH),  // gap matches bar horizontal inset
+    );
+  }
+
+  // ─── Dashboard mode: metrics row ─────────────────────────────────────────
+  if (!node) {
+    return h('div', {
+      ref: barRef,
+      style: {
+        height: '2.4em', borderBottom: `1px solid ${C.borderDim}`,
+        display: 'flex', alignItems: 'center', padding: `0 clamp(6px,0.8vw,12px)`,
+      },
+    }, mkToggle('auto'));
+  }
+
+  const cpuPct      = node.cpu || 0;
+  const memPct      = node.mem_total ? node.mem_used / node.mem_total : 0;
+  const netInMbps   = bytesToMbps(node.net_in);
+  const netOutMbps  = bytesToMbps(node.net_out);
+  const maxMbps     = config ? config.max_net_mbps : 1000;
   const activeCount = lxcs.filter(l => l.status === 'running').length;
+  const barW        = narrow ? (tiny ? 22 : 28) : 55;
+  const gap         = narrow ? '3px' : 'clamp(5px,0.7vw,12px)';
 
   const tempColor = node.cpu_temp == null ? C.dim
     : node.cpu_temp >= 80 ? C.red
     : node.cpu_temp >= 65 ? C.amberHi
     : C.white;
 
-  const fs = 'clamp(11px,1.15vw,16px)';
+  const sep = narrow ? null : h('span', { style: { color: C.borderDim } }, '│');
 
-  return html`
-    <div style="
-      display: flex;
-      align-items: center;
-      gap: clamp(6px,0.8vw,14px);
-      padding: clamp(8px,1vh,16px) clamp(6px,0.8vw,12px);
-      border-bottom: 1px solid ${C.border};
-      background: ${C.panel};
-      font-size: ${fs};
-      flex-wrap: nowrap;
-      overflow: hidden;
-      flex-shrink: 0;
-    ">
-      <span style="color:${C.amberHi};font-weight:bold;flex-shrink:0;letter-spacing:1px">
-        ${config ? config.panel_title : 'HOST'}
-      </span>
+  return h('div', {
+    ref: barRef,
+    style: {
+      display:      'flex',
+      alignItems:   'center',
+      gap,
+      padding:      barPad,
+      borderBottom: `1px solid ${C.border}`,
+      background:   C.panel,
+      fontSize:     fs,
+      flexWrap:     'nowrap',
+      overflow:     'hidden',
+      flexShrink:   0,
+      boxSizing:    'border-box',
+    },
+  },
+    h('span', { style: { color: C.amberHi, fontWeight: 'bold', flexShrink: 0, letterSpacing: narrow ? 0 : '1px' } },
+      config ? config.panel_title : 'HOST'),
 
-      <span style="color:${C.borderDim}">│</span>
+    sep,
 
-      <span style="display:flex;align-items:center;gap:4px;flex-shrink:0">
-        <span style="color:${C.dim}">CPU</span>
-        ${h(LedBar, { value: cpuPct, width: 60, height: 8 })}
-        <span style="color:${C.white};min-width:26px">${pct(cpuPct)}%</span>
-      </span>
+    h('span', { style: { display: 'flex', alignItems: 'center', gap: '3px', flexShrink: 0 } },
+      h('span', { style: { color: C.dim } }, 'CPU'),
+      h(LedBar, { value: cpuPct, width: barW, height: 7, segments: narrow ? 12 : 20 }),
+      h('span', { style: { color: C.white, minWidth: narrow ? '22px' : '26px' } }, pct(cpuPct) + '%'),
+    ),
 
-      <span style="display:flex;align-items:center;gap:4px;flex-shrink:0">
-        <span style="color:${C.dim}">MEM</span>
-        ${h(LedBar, { value: memPct, width: 60, height: 8, color: C.blueHi })}
-        <span style="color:${C.white};min-width:26px">${pct(memPct)}%</span>
-      </span>
+    h('span', { style: { display: 'flex', alignItems: 'center', gap: '3px', flexShrink: 0 } },
+      h('span', { style: { color: C.dim } }, 'MEM'),
+      h(LedBar, { value: memPct, width: barW, height: 7, color: C.blueHi, segments: narrow ? 12 : 20 }),
+      h('span', { style: { color: C.white, minWidth: narrow ? '22px' : '26px' } }, pct(memPct) + '%'),
+    ),
 
-      <span style="color:${C.borderDim}">│</span>
+    sep,
 
-      ${node.cpu_temp != null ? html`
-        <span style="flex-shrink:0">
-          <span style="color:${C.dim}">TEMP </span>
-          <span style="color:${tempColor}">${Math.round(node.cpu_temp)}°C</span>
-        </span>
-        <span style="color:${C.borderDim}">│</span>
-      ` : null}
+    // Temp — hidden on very narrow screens to save space
+    !narrow && node.cpu_temp != null ? h('span', { style: { flexShrink: 0 } },
+      h('span', { style: { color: C.dim } }, 'TEMP '),
+      h('span', { style: { color: tempColor } }, Math.round(node.cpu_temp) + '°C'),
+    ) : null,
+    !narrow && node.cpu_temp != null ? sep : null,
 
-      ${h(NetTicker, { mbps: netInMbps, maxMbps, label: '↓' })}
-      ${h(NetTicker, { mbps: netOutMbps, maxMbps, label: '↑' })}
+    h(NetTicker, { mbps: netInMbps, maxMbps, label: '↓', compact: narrow }),
+    h(NetTicker, { mbps: netOutMbps, maxMbps, label: '↑', compact: narrow }),
 
-      <span style="color:${C.borderDim}">│</span>
+    sep,
 
-      <span style="flex-shrink:0;color:${C.dim}">
-        UP <span style="color:${C.white}">${formatUptime(node.uptime)}</span>
-      </span>
+    // Uptime — hidden on narrow screens
+    !narrow ? h('span', { style: { flexShrink: 0, color: C.dim } },
+      'UP ', h('span', { style: { color: C.white } }, formatUptime(node.uptime)),
+    ) : null,
 
-      <span style="flex-shrink:0;color:${C.dim}">
-        <span style="color:${C.greenHi}">${activeCount}</span>/<span style="color:${C.white}">${lxcs.length}</span> LXC
-      </span>
-    </div>
-  `;
+    h('span', { style: { flexShrink: 0, color: C.dim } },
+      h('span', { style: { color: C.greenHi } }, activeCount),
+      '/',
+      h('span', { style: { color: C.white } }, lxcs.length),
+      ' LXC',
+    ),
+
+    mkToggle('auto'),
+  );
 }
 
 // ─── LxcCell ─────────────────────────────────────────────────────────────────
@@ -928,15 +1135,338 @@ function computeFlicker(lxcs, prev) {
   return next;
 }
 
+// ─── Console pane layout utilities ───────────────────────────────────────────
+
+const PANE_GAP = 2; // divider bar width in pixels (amber bleed-through)
+
+// Find the column count that maximises the minimum cell dimension (squarest cells).
+// Ties broken by fill efficiency (fewer empty slots).
+function computeGrid(n, W, H) {
+  if (n <= 1) return { cols: 1, rows: 1 };
+  let bestCols  = 1;
+  let bestScore = -1;
+  for (let c = 1; c <= n; c++) {
+    const r        = Math.ceil(n / c);
+    const cellW    = W / c;
+    const cellH    = H / r;
+    const minDim   = Math.min(cellW, cellH);
+    const fill     = n / (c * r);           // 0-1, penalises empty slots
+    const score    = minDim * 1000 + fill * 10;
+    if (score > bestScore) { bestScore = score; bestCols = c; }
+  }
+  return { cols: bestCols, rows: Math.ceil(n / bestCols) };
+}
+
+// Returns array of { x, y, w, h } pixel rects for n visible panes.
+// Last row stretches to fill container width (tmux behaviour).
+function computePaneRects(n, W, H) {
+  if (n === 0) return [];
+  const { cols, rows } = computeGrid(n, W, H);
+  const cellH      = (H - (rows - 1) * PANE_GAP) / rows;
+  const cellW      = (W - (cols - 1) * PANE_GAP) / cols;
+  const lastRowN   = n - (rows - 1) * cols;
+  const lastCellW  = lastRowN > 0 ? (W - (lastRowN - 1) * PANE_GAP) / lastRowN : cellW;
+
+  return Array.from({ length: n }, (_, i) => {
+    const row    = Math.floor(i / cols);
+    const col    = i % cols;
+    const isLast = row === rows - 1;
+    const w      = isLast ? lastCellW : cellW;
+    const x      = isLast ? col * (lastCellW + PANE_GAP) : col * (cellW + PANE_GAP);
+    const y      = row * (cellH + PANE_GAP);
+    return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(cellH) };
+  });
+}
+
+// ─── ConsolePane ──────────────────────────────────────────────────────────────
+// Native xterm.js terminal proxied server-side to Proxmox via WebSocket.
+// No Proxmox cookies in the browser — all auth is handled by the dashboard server.
+
+// Hide scrollbars: panes tab strip + xterm.js internal viewport
+{ const s = document.createElement('style'); s.textContent = [
+  '.panes-tabs::-webkit-scrollbar{display:none}',
+  '.xterm-viewport::-webkit-scrollbar{display:none}',
+  '.xterm-viewport{scrollbar-width:none}',
+].join(''); document.head.appendChild(s); }
+
+// Uppercase + remove vowels for compact tab labels, then CSS clips without ellipsis
+function fmtTabName(raw) {
+  return String(raw).toUpperCase().replace(/[AEIOU]/g, '');
+}
+
+let _xtermCssInjected = false;
+function injectXtermCss() {
+  if (_xtermCssInjected) return;
+  _xtermCssInjected = true;
+  const link = document.createElement('link');
+  link.rel  = 'stylesheet';
+  link.href = 'https://unpkg.com/@xterm/xterm@5.5.0/css/xterm.css';
+  document.head.appendChild(link);
+}
+
+// Tracks which terminal the user last typed into — used by the tmux prefix button.
+const _activeTerm = { send: null };
+
+// Shared promise so all ConsolePanes reuse the same CDN fetch.
+// PanesView triggers this early so the first tab open is instant.
+let _xtermPromise = null;
+function warmXterm() {
+  if (!_xtermPromise) {
+    _xtermPromise = Promise.all([
+      import('https://esm.sh/@xterm/xterm@5.5.0'),
+      import('https://esm.sh/@xterm/addon-fit@0.10.0'),
+    ]);
+  }
+  return _xtermPromise;
+}
+
+function ConsolePane({ vmid, visible }) {
+  const containerRef = useRef(null);
+  const termRef      = useRef(null);
+  const fitRef       = useRef(null);
+  const wsRef        = useRef(null);
+  const pingRef      = useRef(null);
+  const readyRef     = useRef(false); // true after Proxmox sends "OK"
+  const sendStrRef   = useRef(null);  // current terminal's send function (for _activeTerm cleanup)
+
+  useEffect(() => {
+    injectXtermCss();
+    let destroyed = false;
+
+    (async () => {
+      const [{ Terminal }, { FitAddon }] = await warmXterm();
+      if (destroyed || !containerRef.current) return;
+
+      const term = new Terminal({
+        theme: {
+          background:          '#000000',
+          foreground:          '#d8d0c0',
+          cursor:              '#e8a030',
+          cursorAccent:        '#000000',
+          selectionBackground: '#e8a03030',
+          black:   '#1e1c18', brightBlack:   '#3a3530',
+          red:     '#cc1a1a', brightRed:     '#dd3030',
+          green:   '#30a050', brightGreen:   '#40cc60',
+          yellow:  '#c87010', brightYellow:  '#e8a030',
+          blue:    '#40a0e0', brightBlue:    '#60b8f0',
+          magenta: '#a060f0', brightMagenta: '#c080ff',
+          cyan:    '#30d0b8', brightCyan:    '#40eedd',
+          white:   '#d8d0c0', brightWhite:   '#f0e8d8',
+        },
+        fontFamily:  "'Glass TTY VT220', 'Courier New', monospace",
+        fontSize:     14,
+        cursorStyle: 'block',
+        scrollback:   2000,
+      });
+
+      const fit = new FitAddon();
+      term.loadAddon(fit);
+      term.open(containerRef.current);
+
+      termRef.current = term;
+      fitRef.current  = fit;
+
+      // Re-fit whenever the container is resized (handles pane grid re-tiling).
+      // Always push the new size explicitly — onResize only fires when cols/rows change,
+      // but after reconnect the PTY may have drifted from the terminal's current size.
+      const ro = new ResizeObserver(() => {
+        if (destroyed || !fitRef.current) return;
+        try {
+          fitRef.current.fit();
+          if (readyRef.current && ws.readyState === WebSocket.OPEN) {
+            ws.send(`1:${term.cols}:${term.rows}:`);
+          }
+        } catch {}
+      });
+      ro.observe(containerRef.current);
+
+      // WebSocket to our server-side proxy — no Proxmox cookies needed
+      const proto  = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsPath = vmid === 'node' ? '/api/node/termproxy' : `/api/lxc/${vmid}/termproxy`;
+      const ws     = new WebSocket(`${proto}//${location.host}${wsPath}`, ['binary']);
+      ws.binaryType = 'arraybuffer';
+      wsRef.current = ws;
+
+      ws.onmessage = e => {
+        const data = new Uint8Array(e.data instanceof ArrayBuffer ? e.data : new TextEncoder().encode(e.data));
+        if (!readyRef.current) {
+          // Proxmox sends "OK" (0x4F 0x4B) to confirm auth; anything after is terminal data
+          if (data[0] === 79 && data[1] === 75) {
+            readyRef.current = true;
+            if (data.length > 2) term.write(data.slice(2));
+            // Double-RAF: wait for pane layout to settle, then fit and push size.
+            // We always send 1:cols:rows: explicitly — onResize won't fire if the
+            // terminal was already fit to these dimensions during setup.
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+              fit.fit();
+              ws.send(`1:${term.cols}:${term.rows}:`);
+              term.focus();
+            }));
+          }
+          // else: still authenticating, ignore
+        } else {
+          term.write(data);
+        }
+      };
+
+      // Proxmox input protocol: "0:" + UTF-8 byte length + ":" + data
+      // Register this terminal as active on every keystroke so the tmux prefix
+      // button always targets whichever pane the user last interacted with.
+      const sendStr = str => {
+        if (ws.readyState === WebSocket.OPEN && readyRef.current) {
+          ws.send(`0:${new TextEncoder().encode(str).length}:${str}`);
+        }
+      };
+      sendStrRef.current = sendStr;
+      term.onData(d => {
+        _activeTerm.send = sendStr;
+        sendStr(d);
+      });
+
+      // Proxmox resize protocol: "1:cols:rows:"
+      term.onResize(({ cols, rows }) => {
+        if (ws.readyState === WebSocket.OPEN && readyRef.current) {
+          ws.send(`1:${cols}:${rows}:`);
+        }
+      });
+
+      // Keepalive ping every 30 s (Proxmox closes idle connections otherwise)
+      pingRef.current = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) ws.send('2');
+      }, 30000);
+
+      ws.onclose = () => {
+        clearInterval(pingRef.current);
+        if (!destroyed && termRef.current) term.writeln('\r\n\x1b[2m[disconnected]\x1b[0m');
+      };
+      ws.onerror = () => {
+        if (!destroyed && termRef.current) term.writeln('\r\n\x1b[31m[connection error]\x1b[0m');
+      };
+
+      return () => ro.disconnect();
+    })();
+
+    return () => {
+      destroyed = true;
+      if (_activeTerm.send === sendStrRef.current) _activeTerm.send = null;
+      clearInterval(pingRef.current);
+      wsRef.current?.close();
+      termRef.current?.dispose();
+      termRef.current = null;
+      fitRef.current  = null;
+      wsRef.current   = null;
+      readyRef.current = false;
+    };
+  }, [vmid]);
+
+  // Fit and re-send terminal size when pane becomes visible after being minimised.
+  // onResize alone is not enough — if grid dimensions are unchanged the event won't fire.
+  useEffect(() => {
+    if (!visible || !fitRef.current) return;
+    requestAnimationFrame(() => {
+      try {
+        fitRef.current.fit();
+        if (readyRef.current && wsRef.current?.readyState === WebSocket.OPEN && termRef.current) {
+          wsRef.current.send(`1:${termRef.current.cols}:${termRef.current.rows}:`);
+        }
+      } catch {}
+    });
+  }, [visible]);
+
+  return h('div', {
+    ref:   containerRef,
+    style: { width: '100%', height: '100%', overflow: 'hidden', background: '#000' },
+  });
+}
+
+// ─── PaneGrid ─────────────────────────────────────────────────────────────────
+// Renders absolutely-positioned terminal panes. Connected panes (visible or minimised)
+// are mounted once and NEVER reparented — hiding uses display:none so sessions persist.
+function PaneGrid({ lxcs, paneStates }) {
+  const containerRef              = useRef(null);
+  const [dim, setDim]             = useState({ w: 100, h: 100 });
+  const [focusedVmid, setFocused] = useState(null);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(entries => {
+      const { width, height } = entries[0].contentRect;
+      setDim({ w: Math.max(1, Math.floor(width)), h: Math.max(1, Math.floor(height)) });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Sort: ROOT entry (non-numeric vmid) always first, then by numeric vmid
+  const allLxcs   = [...lxcs].sort((a, b) => {
+    const na = Number(a.vmid), nb = Number(b.vmid);
+    if (isNaN(na)) return -1;
+    if (isNaN(nb)) return  1;
+    return na - nb;
+  });
+  const connected = allLxcs.filter(l => { const s = (paneStates && paneStates[l.vmid]) || 'closed'; return s === 'visible' || s === 'minimized'; });
+  const visible   = connected.filter(l => ((paneStates && paneStates[l.vmid]) || 'closed') === 'visible');
+
+  const rects  = computePaneRects(visible.length, dim.w, dim.h);
+  const rectMap = {};
+  visible.forEach((l, i) => { rectMap[l.vmid] = rects[i]; });
+
+  return h('div', {
+    ref:   containerRef,
+    style: { flex: 1, position: 'relative', overflow: 'hidden', minHeight: 0, background: C.amber + '50' },
+  },
+    connected.map(lxc => {
+      const rect      = rectMap[lxc.vmid];
+      const isVisible = !!rect;
+      const isFocused = focusedVmid === lxc.vmid;
+
+      return h('div', {
+        key:     lxc.vmid,
+        onClick: () => setFocused(lxc.vmid),
+        style: {
+          position:  'absolute',
+          left:      isVisible ? rect.x + 'px' : '0',
+          top:       isVisible ? rect.y + 'px' : '0',
+          width:     isVisible ? rect.w + 'px' : '0',
+          height:    isVisible ? rect.h + 'px' : '0',
+          display:   isVisible ? 'block' : 'none',
+          boxSizing: 'border-box',
+          border:    `2px solid ${isFocused ? C.amberHi : C.borderDim}`,
+          overflow:  'hidden',
+        },
+      },
+        h(ConsolePane, { key: 'term-' + lxc.vmid, vmid: lxc.vmid, visible: isVisible }),
+      );
+    }),
+  );
+}
+
+// ROOT shell sentinel — prepended to lxcs so PaneGrid mounts a ConsolePane for it
+const NODE_ENTRY = { vmid: 'node', display_name: 'ROOT', status: 'running', _isNode: true };
+
+// ─── PanesView ────────────────────────────────────────────────────────────────
+// All auth is handled server-side; the browser only talks to the dashboard.
+function PanesView({ lxcs, paneStates }) {
+  // Pre-warm the xterm.js CDN fetch the moment the user switches to panes view,
+  // so the first tab click is instant rather than waiting for a cold CDN download.
+  useEffect(() => { injectXtermCss(); warmXterm(); }, []);
+  // Prepend the ROOT shell so PaneGrid knows to render a ConsolePane for it
+  const allPanes = [NODE_ENTRY, ...lxcs];
+  return h(PaneGrid, { lxcs: allPanes, paneStates });
+}
+
 // ─── App ─────────────────────────────────────────────────────────────────────
 function App() {
-  const [status,     setStatus]     = useState(null);
-  const [config,     setConfig]     = useState(null);
-  const [lastUpdate, setLastUpdate] = useState(null);
-  const [failCount,  setFailCount]  = useState(0);
-  const [winW,       setWinW]       = useState(window.innerWidth);
-  const [winH,       setWinH]       = useState(window.innerHeight);
-  const [openVmid,   setOpenVmid]   = useState(null);
+  const [status,      setStatus]     = useState(null);
+  const [config,      setConfig]     = useState(null);
+  const [lastUpdate,  setLastUpdate] = useState(null);
+  const [failCount,   setFailCount]  = useState(0);
+  const [winW,        setWinW]       = useState(window.innerWidth);
+  const [winH,        setWinH]       = useState(window.innerHeight);
+  const [openVmid,    setOpenVmid]   = useState(null);
+  const [view,        setView]       = useState('dashboard'); // 'dashboard' | 'panes'
+  const [paneStates,  setPaneStates] = useState({});          // vmid → 'closed'|'visible'|'minimized'
   const flickerRef = useRef({});
   const lxcsRef    = useRef([]);
 
@@ -950,12 +1480,13 @@ function App() {
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  // Close open cell when clicking anywhere outside a cell
+  // Close open LXC cell when clicking anywhere outside — only active in dashboard mode
   useEffect(() => {
+    if (view === 'panes') return;
     const close = () => setOpenVmid(null);
     document.addEventListener('click', close);
     return () => document.removeEventListener('click', close);
-  }, []);
+  }, [view]);
 
   const poll = useCallback(async () => {
     try {
@@ -983,6 +1514,42 @@ function App() {
     }, 80);
     return () => clearInterval(id);
   }, []);
+
+  // Load persisted pane states on mount (shared across devices/refreshes)
+  useEffect(() => {
+    fetch('/api/panes')
+      .then(r => r.json())
+      .then(data => { if (data && data.states) setPaneStates(data.states); })
+      .catch(() => {});
+  }, []);
+
+  function savePaneStates(states) {
+    fetch('/api/panes', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(states),
+    }).catch(() => {});
+  }
+
+  // Tab click: closed → visible; visible → minimized; minimized → visible
+  function handleTabClick(vmid) {
+    setPaneStates(prev => {
+      const cur     = prev[vmid] || 'closed';
+      const next    = cur === 'closed' ? 'visible' : cur === 'visible' ? 'minimized' : 'visible';
+      const updated = { ...prev, [vmid]: next };
+      savePaneStates(updated);
+      return updated;
+    });
+  }
+
+  // Tab × close: disconnect iframe
+  function handleTabClose(vmid) {
+    setPaneStates(prev => {
+      const updated = { ...prev, [vmid]: 'closed' };
+      savePaneStates(updated);
+      return updated;
+    });
+  }
 
   const disconnected = failCount >= 3;
   const lxcs       = status ? (status.lxcs || []) : [];
@@ -1013,9 +1580,46 @@ function App() {
         min-height:0;
       ">
         ${disconnected ? h(ConnectionOverlay, { lastUpdate }) : null}
-        ${h(HeaderBar, { node: status ? status.node : null, lxcs, config })}
-        ${h(LxcGrid, { lxcs, cols, flickerRef, openVmid, setOpenVmid })}
-        ${h(GpuSection, { gpus, show: showGpus })}
+        ${h(HeaderBar, {
+          node: status ? status.node : null,
+          lxcs, config, view, setView,
+          paneStates,
+          onTabClick:  handleTabClick,
+          onTabClose:  handleTabClose,
+        })}
+
+        <!-- Content: both views always mounted (overlaid grid) so GPU keeps polling
+             and terminals survive. CSS opacity+scale cross-fade handles the transition. -->
+        <div style="
+          flex:1; min-height:0; overflow:hidden;
+          display:grid; grid-template-rows:1fr; grid-template-columns:1fr;
+        ">
+          <!-- Dashboard view -->
+          <div style="
+            grid-row:1; grid-column:1;
+            display:flex; flex-direction:column; min-height:0; overflow:hidden;
+            transition: opacity 0.3s ease, transform 0.3s ease;
+            opacity:    ${view === 'dashboard' ? 1 : 0};
+            transform:  ${view === 'dashboard' ? 'scale(1)' : 'scale(0.96)'};
+            pointer-events: ${view === 'dashboard' ? 'auto' : 'none'};
+          ">
+            ${h(LxcGrid,    { lxcs, cols, flickerRef, openVmid, setOpenVmid })}
+            ${h(GpuSection, { gpus, show: showGpus })}
+          </div>
+
+          <!-- Panes view -->
+          <div style="
+            grid-row:1; grid-column:1;
+            display:flex; flex-direction:column; min-height:0; overflow:hidden;
+            transition: opacity 0.3s ease, transform 0.3s ease;
+            opacity:    ${view === 'panes' ? 1 : 0};
+            transform:  ${view === 'panes' ? 'scale(1)' : 'scale(0.96)'};
+            pointer-events: ${view === 'panes' ? 'auto' : 'none'};
+          ">
+            ${h(PanesView, { lxcs, paneStates })}
+          </div>
+        </div>
+
         ${h(Footer, { config })}
       </div>
     </div>
