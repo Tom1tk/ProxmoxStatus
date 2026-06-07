@@ -152,7 +152,7 @@ let _dashBarH = 0;
 
 // ─── HeaderBar ───────────────────────────────────────────────────────────────
 // Dual-mode: dashboard metrics row OR panes tab strip, toggled by the ⊞ PANES button.
-function HeaderBar({ node, lxcs, config, view, setView, paneStates, onTabClick, onTabClose }) {
+function HeaderBar({ node, lxcs, config, view, setView, paneStates, onTabClick, onTabClose, keyRowOpen, setKeyRowOpen }) {
   const vw     = window.innerWidth;
   const narrow = vw < 480;   // phone portrait
   const tiny   = vw < 360;   // very small phone
@@ -228,16 +228,18 @@ function HeaderBar({ node, lxcs, config, view, setView, paneStates, onTabClick, 
         flexShrink:    0,
       },
     },
-      // PANES tmux-prefix button — stretches full bar height, text/size matches dashboard title
+      // PANES button — on mobile toggles the on-screen key row (which now holds the
+      // tmux-prefix button); on desktop it still sends the tmux prefix directly,
+      // since a real keyboard already has Ctrl/arrows/Esc.
       h('button', {
-        onClick:  sendTmuxPrefix,
-        title:    'Send tmux prefix (Ctrl+B)',
+        onClick: narrow ? () => setKeyRowOpen(o => !o) : sendTmuxPrefix,
+        title:   narrow ? 'Show/hide terminal key row' : 'Send tmux prefix (Ctrl+B)',
         style: {
           alignSelf:    'stretch',
           display:      'flex',
           alignItems:   'center',
-          color:        prefixFlash ? C.white : C.amberHi,
-          background:   prefixFlash ? C.amber + '55' : 'transparent',
+          color:        (narrow ? keyRowOpen : prefixFlash) ? C.white : C.amberHi,
+          background:   (narrow ? keyRowOpen : prefixFlash) ? C.amber + '55' : 'transparent',
           fontWeight:   'bold',
           flexShrink:   0,
           letterSpacing: narrow ? 0 : '1px',
@@ -1204,8 +1206,101 @@ function injectXtermCss() {
   document.head.appendChild(link);
 }
 
-// Tracks which terminal the user last typed into — used by the tmux prefix button.
-const _activeTerm = { send: null };
+// Tracks which terminal the user last typed into — used by the tmux prefix button
+// and the mobile key row. `ctrl` arms a one-shot Ctrl modifier for the next typed
+// char; `clearCtrl` lets the key row reset its highlight once that char is consumed.
+const _activeTerm = { send: null, ctrl: false, clearCtrl: null };
+
+// ─── MobileKeyRow ─────────────────────────────────────────────────────────────
+// Mobile-only key row for the panes view: arrows, Esc, sticky Ctrl, tmux prefix.
+// Soft keyboards expose none of these, so terminal history/interrupt/escape are
+// otherwise unreachable on a phone. Floats just above the soft keyboard via the
+// visualViewport API (falls back to the screen bottom when no keyboard is open).
+function MobileKeyRow({ onClose }) {
+  const [armed,  setArmed]  = useState(false);
+  const [flash,  setFlash]  = useState(null); // key id briefly highlighted on tap
+  const [kbInset, setKbInset] = useState(0);
+
+  useEffect(() => {
+    _activeTerm.clearCtrl = () => setArmed(false);
+    return () => { if (_activeTerm.clearCtrl) _activeTerm.clearCtrl = null; };
+  }, []);
+
+  // Track the soft keyboard via visualViewport: inset = space the keyboard occupies
+  // at the bottom of the layout viewport.
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => {
+      const inset = window.innerHeight - (vv.height + vv.offsetTop);
+      setKbInset(Math.max(0, Math.round(inset)));
+    };
+    update();
+    vv.addEventListener('resize', update);
+    vv.addEventListener('scroll', update);
+    return () => { vv.removeEventListener('resize', update); vv.removeEventListener('scroll', update); };
+  }, []);
+
+  function tap(id, seq) {
+    if (_activeTerm.send) _activeTerm.send(seq);
+    setFlash(id);
+    setTimeout(() => setFlash(f => (f === id ? null : f)), 200);
+  }
+
+  function toggleCtrl() {
+    const next = !armed;
+    setArmed(next);
+    _activeTerm.ctrl = next;
+  }
+
+  const btnBase = {
+    flex:          1,
+    minWidth:      0,
+    height:        '40px',
+    display:       'flex',
+    alignItems:    'center',
+    justifyContent:'center',
+    background:    'transparent',
+    border:        'none',
+    borderRight:   `1px solid ${C.borderDim}`,
+    color:         C.amberHi,
+    fontFamily:    'inherit',
+    fontWeight:    'bold',
+    fontSize:      '15px',
+    cursor:        'pointer',
+    transition:    'color 0.12s, background 0.12s',
+  };
+  const litStyle = { color: C.white, background: C.amber + '55' };
+
+  const keyBtn = (id, label, seq, opts) => h('button', {
+    onClick: () => tap(id, seq),
+    style: { ...btnBase, ...(opts || {}), ...(flash === id ? litStyle : {}) },
+  }, label);
+
+  return h('div', {
+    style: {
+      position:     'fixed',
+      left: 0, right: 0,
+      bottom:       `${kbInset}px`,
+      zIndex:       50,
+      display:      'flex',
+      background:   C.panel,
+      borderTop:    `1px solid ${C.border}`,
+      boxShadow:    '0 -4px 16px #000a',
+    },
+  },
+    keyBtn('esc', 'ESC', '\x1b'),
+    h('button', {
+      onClick: toggleCtrl,
+      style: { ...btnBase, letterSpacing: '0.5px', ...(armed ? litStyle : {}) },
+    }, 'CTRL'),
+    keyBtn('left',  '◀', '\x1b[D'),
+    keyBtn('up',    '▲', '\x1b[A'),
+    keyBtn('down',  '▼', '\x1b[B'),
+    keyBtn('right', '▶', '\x1b[C'),
+    keyBtn('prefix', '⎈B', '\x02', { borderRight: 'none' }),
+  );
+}
 
 // Shared promise so all ConsolePanes reuse the same CDN fetch.
 // PanesView triggers this early so the first tab open is instant.
@@ -1320,6 +1415,14 @@ function ConsolePane({ vmid, visible }) {
       sendStrRef.current = sendStr;
       term.onData(d => {
         _activeTerm.send = sendStr;
+        // Sticky Ctrl (armed by the mobile key row): map the next single
+        // printable char to its control code (e.g. 'c' → 0x03 = Ctrl+C).
+        if (_activeTerm.ctrl && d.length === 1 && d >= ' ' && d <= '~') {
+          _activeTerm.ctrl = false;
+          if (_activeTerm.clearCtrl) _activeTerm.clearCtrl();
+          sendStr(String.fromCharCode(d.toUpperCase().charCodeAt(0) & 0x1f));
+          return;
+        }
         sendStr(d);
       });
 
@@ -1467,6 +1570,7 @@ function App() {
   const [openVmid,    setOpenVmid]   = useState(null);
   const [view,        setView]       = useState('dashboard'); // 'dashboard' | 'panes'
   const [paneStates,  setPaneStates] = useState({});          // vmid → 'closed'|'visible'|'minimized'
+  const [keyRowOpen,  setKeyRowOpen] = useState(false);       // mobile-only on-screen key row
   const flickerRef = useRef({});
   const lxcsRef    = useRef([]);
 
@@ -1552,6 +1656,7 @@ function App() {
   }
 
   const disconnected = failCount >= 3;
+  const narrow     = winW < 480; // phone portrait — same threshold HeaderBar uses
   const lxcs       = status ? (status.lxcs || []) : [];
   const gpus       = status ? (status.gpus || []) : [];
   const showGpus   = config ? config.show_gpus : false;
@@ -1586,6 +1691,7 @@ function App() {
           paneStates,
           onTabClick:  handleTabClick,
           onTabClose:  handleTabClose,
+          keyRowOpen, setKeyRowOpen,
         })}
 
         <!-- Content: both views always mounted (overlaid grid) so GPU keeps polling
@@ -1622,6 +1728,9 @@ function App() {
 
         ${h(Footer, { config })}
       </div>
+      ${view === 'panes' && narrow && keyRowOpen
+        ? h(MobileKeyRow, { onClose: () => setKeyRowOpen(false) })
+        : null}
     </div>
   `;
 }
