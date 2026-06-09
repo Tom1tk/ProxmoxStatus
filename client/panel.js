@@ -47,6 +47,39 @@ const LIGHT = {
 // so all child components read the correct palette on every re-render.
 let C = DARK;
 
+// xterm.js terminal themes — dark stays true-black; light matches the panel palette.
+const DARK_TERM_THEME = {
+  background:          '#000000',
+  foreground:          '#d8d0c0',
+  cursor:              '#e8a030',
+  cursorAccent:        '#000000',
+  selectionBackground: '#e8a03030',
+  black:   '#1e1c18', brightBlack:   '#3a3530',
+  red:     '#cc1a1a', brightRed:     '#dd3030',
+  green:   '#30a050', brightGreen:   '#40cc60',
+  yellow:  '#c87010', brightYellow:  '#e8a030',
+  blue:    '#40a0e0', brightBlue:    '#60b8f0',
+  magenta: '#a060f0', brightMagenta: '#c080ff',
+  cyan:    '#30d0b8', brightCyan:    '#40eedd',
+  white:   '#d8d0c0', brightWhite:   '#f0e8d8',
+};
+
+const LIGHT_TERM_THEME = {
+  background:          '#f0ece4',
+  foreground:          '#1a1610',
+  cursor:              '#c06800',
+  cursorAccent:        '#f0ece4',
+  selectionBackground: '#c0680030',
+  black:   '#1a1610', brightBlack:   '#706858',
+  red:     '#c01818', brightRed:     '#dd2020',
+  green:   '#186832', brightGreen:   '#1a8040',
+  yellow:  '#a85000', brightYellow:  '#c06800',
+  blue:    '#1868b0', brightBlue:    '#2080c8',
+  magenta: '#5828a0', brightMagenta: '#7040c0',
+  cyan:    '#1880a0', brightCyan:    '#20a0c0',
+  white:   '#706858', brightWhite:   '#1a1610',
+};
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function formatUptime(seconds) {
   if (!seconds) return '0d 00:00';
@@ -1362,14 +1395,24 @@ function warmXterm() {
   return _xtermPromise;
 }
 
-function ConsolePane({ vmid, visible }) {
-  const containerRef = useRef(null);
-  const termRef      = useRef(null);
-  const fitRef       = useRef(null);
-  const wsRef        = useRef(null);
-  const pingRef      = useRef(null);
-  const readyRef     = useRef(false); // true after Proxmox sends "OK"
-  const sendStrRef   = useRef(null);  // current terminal's send function (for _activeTerm cleanup)
+function ConsolePane({ vmid, visible, lightMode }) {
+  const containerRef  = useRef(null);
+  const termRef       = useRef(null);
+  const fitRef        = useRef(null);
+  const wsRef         = useRef(null);
+  const pingRef       = useRef(null);
+  const readyRef      = useRef(false); // true after Proxmox sends "OK"
+  const sendStrRef    = useRef(null);  // current terminal's send function (for _activeTerm cleanup)
+  const lightModeRef  = useRef(lightMode); // kept current so the async creation closure uses latest value
+
+  useEffect(() => { lightModeRef.current = lightMode; }, [lightMode]);
+
+  // Live-update terminal colours when the app theme toggles.
+  useEffect(() => {
+    if (termRef.current) {
+      termRef.current.options.theme = lightMode ? LIGHT_TERM_THEME : DARK_TERM_THEME;
+    }
+  }, [lightMode]);
 
   useEffect(() => {
     injectXtermCss();
@@ -1380,21 +1423,7 @@ function ConsolePane({ vmid, visible }) {
       if (destroyed || !containerRef.current) return;
 
       const term = new Terminal({
-        theme: {
-          background:          '#000000',
-          foreground:          '#d8d0c0',
-          cursor:              '#e8a030',
-          cursorAccent:        '#000000',
-          selectionBackground: '#e8a03030',
-          black:   '#1e1c18', brightBlack:   '#3a3530',
-          red:     '#cc1a1a', brightRed:     '#dd3030',
-          green:   '#30a050', brightGreen:   '#40cc60',
-          yellow:  '#c87010', brightYellow:  '#e8a030',
-          blue:    '#40a0e0', brightBlue:    '#60b8f0',
-          magenta: '#a060f0', brightMagenta: '#c080ff',
-          cyan:    '#30d0b8', brightCyan:    '#40eedd',
-          white:   '#d8d0c0', brightWhite:   '#f0e8d8',
-        },
+        theme: lightModeRef.current ? LIGHT_TERM_THEME : DARK_TERM_THEME,
         fontFamily:  "'Glass TTY VT220', 'Courier New', monospace",
         fontSize:     14,
         cursorStyle: 'block',
@@ -1532,7 +1561,7 @@ function ConsolePane({ vmid, visible }) {
 // ─── PaneGrid ─────────────────────────────────────────────────────────────────
 // Renders absolutely-positioned terminal panes. Connected panes (visible or minimised)
 // are mounted once and NEVER reparented — hiding uses display:none so sessions persist.
-function PaneGrid({ lxcs, paneStates }) {
+function PaneGrid({ lxcs, paneStates, lightMode }) {
   const containerRef              = useRef(null);
   const [dim, setDim]             = useState({ w: 100, h: 100 });
   const [focusedVmid, setFocused] = useState(null);
@@ -1586,7 +1615,7 @@ function PaneGrid({ lxcs, paneStates }) {
           overflow:  'hidden',
         },
       },
-        h(ConsolePane, { key: 'term-' + lxc.vmid, vmid: lxc.vmid, visible: isVisible }),
+        h(ConsolePane, { key: 'term-' + lxc.vmid, vmid: lxc.vmid, visible: isVisible, lightMode }),
       );
     }),
   );
@@ -1597,13 +1626,13 @@ const NODE_ENTRY = { vmid: 'node', display_name: 'ROOT', status: 'running', _isN
 
 // ─── PanesView ────────────────────────────────────────────────────────────────
 // All auth is handled server-side; the browser only talks to the dashboard.
-function PanesView({ lxcs, paneStates }) {
+function PanesView({ lxcs, paneStates, lightMode }) {
   // Pre-warm the xterm.js CDN fetch the moment the user switches to panes view,
   // so the first tab click is instant rather than waiting for a cold CDN download.
   useEffect(() => { injectXtermCss(); warmXterm(); }, []);
   // Prepend the ROOT shell so PaneGrid knows to render a ConsolePane for it
   const allPanes = [NODE_ENTRY, ...lxcs];
-  return h(PaneGrid, { lxcs: allPanes, paneStates });
+  return h(PaneGrid, { lxcs: allPanes, paneStates, lightMode });
 }
 
 // ─── App ─────────────────────────────────────────────────────────────────────
@@ -1773,7 +1802,7 @@ function App() {
             transform:  ${view === 'panes' ? 'scale(1)' : 'scale(0.96)'};
             pointer-events: ${view === 'panes' ? 'auto' : 'none'};
           ">
-            ${h(PanesView, { lxcs, paneStates })}
+            ${h(PanesView, { lxcs, paneStates, lightMode })}
           </div>
         </div>
 
