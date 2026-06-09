@@ -80,6 +80,21 @@ const LIGHT_TERM_THEME = {
   white:   '#706858', brightWhite:   '#1a1610',
 };
 
+// Terminal fonts — the scanline "Glass TTY VT220" font reads poorly on light
+// backgrounds, so light mode swaps to JetBrains Mono (lazy-loaded from Google Fonts).
+const DARK_TERM_FONT  = "'Glass TTY VT220', 'Courier New', monospace";
+const LIGHT_TERM_FONT = "'JetBrains Mono', 'Courier New', monospace";
+
+let _lightTermFontInjected = false;
+function injectLightTermFont() {
+  if (_lightTermFontInjected) return;
+  _lightTermFontInjected = true;
+  const link = document.createElement('link');
+  link.rel  = 'stylesheet';
+  link.href = 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap';
+  document.head.appendChild(link);
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function formatUptime(seconds) {
   if (!seconds) return '0d 00:00';
@@ -721,7 +736,7 @@ function GpuRow({ gpu }) {
       <!-- Top row: name OLED + live stats -->
       <div style="display:flex;align-items:center;gap:clamp(6px,0.8vw,12px);margin-bottom:clamp(3px,0.4vh,6px)">
         <div style="
-          background:#000;border:1px solid ${C.borderDim};
+          background:${C.bg};border:1px solid ${C.borderDim};
           padding:2px clamp(4px,0.5vw,8px);
           color:${C.purpleHi};font-size:clamp(10px,1.05vw,14px);
           letter-spacing:1px;flex-shrink:0;white-space:nowrap;
@@ -790,7 +805,7 @@ function drawGpuHistory(canvas, gpuData, powerLimit, hoverIdx) {
   const W   = canvas.width;
   const H   = canvas.height;
 
-  ctx.fillStyle = '#000000';
+  ctx.fillStyle = C.panel;
   ctx.fillRect(0, 0, W, H);
 
   const ts = gpuData && gpuData.ts;
@@ -823,7 +838,7 @@ function drawGpuHistory(canvas, gpuData, powerLimit, hoverIdx) {
     const range   = Math.max(m.max - m.min, 1);
 
     // Mid grid line
-    ctx.strokeStyle = '#1e1c18';
+    ctx.strokeStyle = C.borderDim;
     ctx.lineWidth   = 0.5;
     ctx.beginPath();
     ctx.moveTo(0, y0 + rowH / 2);
@@ -868,7 +883,7 @@ function drawGpuHistory(canvas, gpuData, powerLimit, hoverIdx) {
 
     // Label (left)
     ctx.font      = '9px monospace';
-    ctx.fillStyle = '#4a4540';
+    ctx.fillStyle = C.dim;
     ctx.textAlign = 'left';
     ctx.fillText(m.label, 3, y0 + 10);
 
@@ -884,7 +899,7 @@ function drawGpuHistory(canvas, gpuData, powerLimit, hoverIdx) {
   // X-axis time labels
   const ageMs = ts[ts.length - 1] - ts[0];
   ctx.font      = '7px monospace';
-  ctx.fillStyle = '#252220';
+  ctx.fillStyle = C.dimmer;
   ctx.textAlign = 'left';
   ctx.fillText(relTime(ageMs) + ' ago', 3, H - 2);
   ctx.textAlign = 'right';
@@ -895,7 +910,7 @@ function drawGpuHistory(canvas, gpuData, powerLimit, hoverIdx) {
     const hx = n === 1 ? 0 : (hoverIdx / (n - 1)) * W;
 
     ctx.save();
-    ctx.strokeStyle = '#4a4540';
+    ctx.strokeStyle = C.dim;
     ctx.lineWidth   = 0.8;
     ctx.setLineDash([3, 3]);
     ctx.beginPath();
@@ -915,7 +930,7 @@ function drawGpuHistory(canvas, gpuData, powerLimit, hoverIdx) {
       const v   = Math.max(m.min, Math.min(m.max, val));
       const y   = y0 + rowH - 2 - ((v - m.min) / Math.max(m.max - m.min, 1)) * (rowH - 4);
       ctx.fillStyle   = col;
-      ctx.strokeStyle = '#000000';
+      ctx.strokeStyle = C.panel;
       ctx.lineWidth   = 1;
       ctx.beginPath();
       ctx.arc(hx, y, 3, 0, Math.PI * 2);
@@ -926,7 +941,7 @@ function drawGpuHistory(canvas, gpuData, powerLimit, hoverIdx) {
 }
 
 // ─── GpuDetailPanel ──────────────────────────────────────────────────────────
-function GpuDetailPanel() {
+function GpuDetailPanel({ lightMode }) {
   const [current,   setCurrent]   = useState({ gpus: [] });
   const [history,   setHistory]   = useState({});
   const [windowSec, setWindowSec] = useState(300);
@@ -973,7 +988,7 @@ function GpuDetailPanel() {
       });
     });
     return () => cancelAnimationFrame(rafId);
-  }, [history, current]);
+  }, [history, current, lightMode]);
 
   function handleCanvasMouseMove(e, idx) {
     const canvas = canvasRefs.current[idx];
@@ -1004,11 +1019,11 @@ function GpuDetailPanel() {
     const tmpCol  = tempColorForValue(tmpVal);
 
     tooltip.innerHTML = [
-      `<div style="color:#4a4540;margin-bottom:2px">${timeStr}</div>`,
-      `<div><span style="color:#4a4540">TEMP  </span><span style="color:${tmpCol}">${tmpVal}°C</span></div>`,
-      `<div><span style="color:#4a4540">PWR   </span><span style="color:${C.tealHi}">${pwrVal}/${Math.round(maxPwr)}W</span></div>`,
-      `<div><span style="color:#4a4540">GPU%  </span><span style="color:${C.greenHi}">${utilVal}%</span></div>`,
-      `<div><span style="color:#4a4540">FAN   </span><span style="color:${C.amberHi}">${fanVal}%</span></div>`,
+      `<div style="color:${C.dim};margin-bottom:2px">${timeStr}</div>`,
+      `<div><span style="color:${C.dim}">TEMP  </span><span style="color:${tmpCol}">${tmpVal}°C</span></div>`,
+      `<div><span style="color:${C.dim}">PWR   </span><span style="color:${C.tealHi}">${pwrVal}/${Math.round(maxPwr)}W</span></div>`,
+      `<div><span style="color:${C.dim}">GPU%  </span><span style="color:${C.greenHi}">${utilVal}%</span></div>`,
+      `<div><span style="color:${C.dim}">FAN   </span><span style="color:${C.amberHi}">${fanVal}%</span></div>`,
     ].join('');
 
     const ttW    = 115;
@@ -1084,7 +1099,7 @@ function GpuDetailPanel() {
       <!-- History graphs, one per GPU -->
       ${Object.entries(history).sort(([a],[b]) => Number(a) - Number(b)).map(([idx, gpuData]) => html`
         <div key=${idx} style="border:1px solid ${C.borderDim};flex-shrink:0">
-          <div style="padding:2px 4px;font-size:clamp(8px,0.8vw,11px);color:${C.purpleHi};border-bottom:1px solid ${C.borderDim};background:#00000040;letter-spacing:0.5px">
+          <div style="padding:2px 4px;font-size:clamp(8px,0.8vw,11px);color:${C.purpleHi};border-bottom:1px solid ${C.borderDim};background:${C.bg}80;letter-spacing:0.5px">
             ${gpuData.name || 'GPU ' + idx}
           </div>
           <div style="position:relative">
@@ -1100,7 +1115,7 @@ function GpuDetailPanel() {
               ref=${el => { if (el) tooltipRef.current[idx] = el; }}
               style="
                 display:none;position:absolute;pointer-events:none;z-index:10;
-                background:#050504ee;border:1px solid ${C.border};
+                background:${C.panel}ee;border:1px solid ${C.border};
                 padding:4px 8px;font-size:clamp(8px,0.75vw,10px);
                 line-height:1.7;white-space:nowrap;font-family:inherit;
               "
@@ -1113,7 +1128,7 @@ function GpuDetailPanel() {
 }
 
 // ─── GpuSection ───────────────────────────────────────────────────────────────
-function GpuSection({ gpus, show }) {
+function GpuSection({ gpus, show, lightMode }) {
   if (!show) return null;
   return html`
     <div style="border-top:1px solid ${C.border};flex-shrink:0;display:flex;min-height:0">
@@ -1126,7 +1141,7 @@ function GpuSection({ gpus, show }) {
       </div>
       <!-- Right 70%: GPU detail panel with live table + history graphs -->
       <div style="flex:1;min-width:0;overflow-y:auto">
-        ${h(GpuDetailPanel, {})}
+        ${h(GpuDetailPanel, { lightMode })}
       </div>
     </div>
   `;
@@ -1407,15 +1422,30 @@ function ConsolePane({ vmid, visible, lightMode }) {
 
   useEffect(() => { lightModeRef.current = lightMode; }, [lightMode]);
 
-  // Live-update terminal colours when the app theme toggles.
+  // Live-update terminal colours and font when the app theme toggles. The font
+  // change can shift cell metrics, so re-fit and notify the PTY of the new size.
   useEffect(() => {
-    if (termRef.current) {
-      termRef.current.options.theme = lightMode ? LIGHT_TERM_THEME : DARK_TERM_THEME;
-    }
+    const term = termRef.current;
+    if (!term) return;
+    term.options.theme      = lightMode ? LIGHT_TERM_THEME : DARK_TERM_THEME;
+    term.options.fontFamily = lightMode ? LIGHT_TERM_FONT  : DARK_TERM_FONT;
+    if (lightMode) injectLightTermFont();
+
+    const refit = () => {
+      try {
+        fitRef.current && fitRef.current.fit();
+        if (readyRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(`1:${term.cols}:${term.rows}:`);
+        }
+      } catch {}
+    };
+    requestAnimationFrame(refit);
+    if (lightMode) document.fonts.load(`14px "JetBrains Mono"`).then(refit).catch(() => {});
   }, [lightMode]);
 
   useEffect(() => {
     injectXtermCss();
+    if (lightModeRef.current) injectLightTermFont();
     let destroyed = false;
 
     (async () => {
@@ -1423,8 +1453,8 @@ function ConsolePane({ vmid, visible, lightMode }) {
       if (destroyed || !containerRef.current) return;
 
       const term = new Terminal({
-        theme: lightModeRef.current ? LIGHT_TERM_THEME : DARK_TERM_THEME,
-        fontFamily:  "'Glass TTY VT220', 'Courier New', monospace",
+        theme:       lightModeRef.current ? LIGHT_TERM_THEME : DARK_TERM_THEME,
+        fontFamily:  lightModeRef.current ? LIGHT_TERM_FONT  : DARK_TERM_FONT,
         fontSize:     14,
         cursorStyle: 'block',
         scrollback:   2000,
@@ -1554,7 +1584,10 @@ function ConsolePane({ vmid, visible, lightMode }) {
 
   return h('div', {
     ref:   containerRef,
-    style: { width: '100%', height: '100%', overflow: 'hidden', background: '#000' },
+    style: {
+      width: '100%', height: '100%', overflow: 'hidden',
+      background: lightMode ? LIGHT_TERM_THEME.background : DARK_TERM_THEME.background,
+    },
   });
 }
 
@@ -1790,7 +1823,7 @@ function App() {
             pointer-events: ${view === 'dashboard' ? 'auto' : 'none'};
           ">
             ${h(LxcGrid,    { lxcs, cols, flickerRef, openVmid, setOpenVmid })}
-            ${h(GpuSection, { gpus, show: showGpus })}
+            ${h(GpuSection, { gpus, show: showGpus, lightMode })}
           </div>
 
           <!-- Panes view -->
