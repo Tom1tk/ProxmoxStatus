@@ -84,6 +84,9 @@ const LIGHT_TERM_THEME = {
 // backgrounds, so light mode swaps to JetBrains Mono (lazy-loaded from Google Fonts).
 const DARK_TERM_FONT  = "'Glass TTY VT220', 'Courier New', monospace";
 const LIGHT_TERM_FONT = "'JetBrains Mono', 'Courier New', monospace";
+// JetBrains Mono renders larger than the pixel-style Glass TTY VT220 at the same size.
+const DARK_TERM_FONT_SIZE  = 14;
+const LIGHT_TERM_FONT_SIZE = 12;
 
 let _lightTermFontInjected = false;
 function injectLightTermFont() {
@@ -1429,6 +1432,7 @@ function ConsolePane({ vmid, visible, lightMode }) {
     if (!term) return;
     term.options.theme      = lightMode ? LIGHT_TERM_THEME : DARK_TERM_THEME;
     term.options.fontFamily = lightMode ? LIGHT_TERM_FONT  : DARK_TERM_FONT;
+    term.options.fontSize   = lightMode ? LIGHT_TERM_FONT_SIZE : DARK_TERM_FONT_SIZE;
     if (lightMode) injectLightTermFont();
 
     const refit = () => {
@@ -1455,7 +1459,7 @@ function ConsolePane({ vmid, visible, lightMode }) {
       const term = new Terminal({
         theme:       lightModeRef.current ? LIGHT_TERM_THEME : DARK_TERM_THEME,
         fontFamily:  lightModeRef.current ? LIGHT_TERM_FONT  : DARK_TERM_FONT,
-        fontSize:     14,
+        fontSize:    lightModeRef.current ? LIGHT_TERM_FONT_SIZE : DARK_TERM_FONT_SIZE,
         cursorStyle: 'block',
         scrollback:   2000,
       });
