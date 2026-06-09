@@ -4,8 +4,8 @@ import htm from 'https://esm.sh/htm@3';
 
 const html = htm.bind(h);
 
-// ─── Colour palette ──────────────────────────────────────────────────────────
-const C = {
+// ─── Colour palettes ─────────────────────────────────────────────────────────
+const DARK = {
   bg:        '#000000',
   panel:     '#000000',
   border:    '#3a3530',
@@ -21,7 +21,31 @@ const C = {
   blueHi:    '#40a0e0',
   purpleHi:  '#a060f0',
   tealHi:    '#30d0b8',
+  shadow:    '#000c',
 };
+
+const LIGHT = {
+  bg:        '#dedad2',
+  panel:     '#f0ece4',
+  border:    '#9a9080',
+  borderDim: '#c8c4b8',
+  white:     '#1a1610',
+  dim:       '#706858',
+  dimmer:    '#b8b4a8',
+  red:       '#c01818',
+  amber:     '#a85000',
+  amberHi:   '#c06800',
+  green:     '#186832',
+  greenHi:   '#1a8040',
+  blueHi:    '#1868b0',
+  purpleHi:  '#5828a0',
+  tealHi:    '#1880a0',
+  shadow:    '#0003',
+};
+
+// Mutable reference — updated at the top of App's render from lightMode state,
+// so all child components read the correct palette on every re-render.
+let C = DARK;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function formatUptime(seconds) {
@@ -1099,18 +1123,41 @@ function ConnectionOverlay({ lastUpdate }) {
 }
 
 // ─── Footer ──────────────────────────────────────────────────────────────────
-function Footer({ config }) {
+function Footer({ config, lightMode, setLightMode }) {
+  function toggleTheme() {
+    const next = !lightMode;
+    localStorage.setItem('panelTheme', next ? 'light' : 'dark');
+    setLightMode(next);
+  }
+
   return html`
     <div style="
       padding: clamp(5px,0.7vh,10px) clamp(6px,0.8vw,12px);
       border-top:1px solid ${C.borderDim};
       font-size:clamp(9px,0.95vw,13px);
       color:${C.dimmer};
-      display:flex;justify-content:space-between;
+      display:flex;justify-content:space-between;align-items:center;
       flex-shrink:0;
     ">
       <span>PROXMOX STATUS PANEL</span>
-      <span>${config ? config.panel_subtitle : 'PROXMOX'}</span>
+      <span style="display:flex;align-items:center;gap:clamp(6px,0.8vw,10px)">
+        ${h('button', {
+          onClick: toggleTheme,
+          title: lightMode ? 'Switch to dark mode' : 'Switch to light mode',
+          style: {
+            background:    lightMode ? C.amber + '20' : 'transparent',
+            border:        `1px solid ${lightMode ? C.amber : C.borderDim}`,
+            color:         lightMode ? C.amberHi : C.dim,
+            fontFamily:    'inherit',
+            fontSize:      'clamp(9px,0.9vw,12px)',
+            padding:       '2px 6px',
+            cursor:        'pointer',
+            lineHeight:    1,
+            letterSpacing: '0.5px',
+          },
+        }, lightMode ? '☾' : '☀')}
+        <span>${config ? config.panel_subtitle : 'PROXMOX'}</span>
+      </span>
     </div>
   `;
 }
@@ -1571,8 +1618,12 @@ function App() {
   const [view,        setView]       = useState('dashboard'); // 'dashboard' | 'panes'
   const [paneStates,  setPaneStates] = useState({});          // vmid → 'closed'|'visible'|'minimized'
   const [keyRowOpen,  setKeyRowOpen] = useState(false);       // mobile-only on-screen key row
+  const [lightMode,   setLightMode]  = useState(() => localStorage.getItem('panelTheme') === 'light');
   const flickerRef = useRef({});
   const lxcsRef    = useRef([]);
+
+  // Update the module-level palette before any child reads it.
+  C = lightMode ? LIGHT : DARK;
 
   useEffect(() => {
     fetch('/api/config').then(r => r.json()).then(setConfig).catch(() => {});
@@ -1679,7 +1730,7 @@ function App() {
         display:flex;flex-direction:column;
         background:${C.panel};
         border:1px solid ${C.border};
-        box-shadow:0 0 40px #000c;
+        box-shadow:0 0 40px ${C.shadow};
         overflow:hidden;
         position:relative;
         min-height:0;
@@ -1726,7 +1777,7 @@ function App() {
           </div>
         </div>
 
-        ${h(Footer, { config })}
+        ${h(Footer, { config, lightMode, setLightMode })}
       </div>
       ${view === 'panes' && narrow && keyRowOpen
         ? h(MobileKeyRow, { onClose: () => setKeyRowOpen(false) })
