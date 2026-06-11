@@ -80,18 +80,15 @@ const LIGHT_TERM_THEME = {
   white:   '#706858', brightWhite:   '#1a1610',
 };
 
-// Terminal fonts — the scanline "Glass TTY VT220" font reads poorly on light
-// backgrounds, so light mode swaps to JetBrains Mono (lazy-loaded from Google Fonts).
-const DARK_TERM_FONT  = "'Glass TTY VT220', 'Courier New', monospace";
-const LIGHT_TERM_FONT = "'JetBrains Mono', 'Courier New', monospace";
-// JetBrains Mono renders larger than the pixel-style Glass TTY VT220 at the same size.
-const DARK_TERM_FONT_SIZE  = 14;
-const LIGHT_TERM_FONT_SIZE = 12;
+// Terminal font — the scanline "Glass TTY VT220" font reads poorly, so both
+// themes use JetBrains Mono (lazy-loaded from Google Fonts).
+const TERM_FONT      = "'JetBrains Mono', 'Courier New', monospace";
+const TERM_FONT_SIZE = 12;
 
-let _lightTermFontInjected = false;
-function injectLightTermFont() {
-  if (_lightTermFontInjected) return;
-  _lightTermFontInjected = true;
+let _termFontInjected = false;
+function injectTermFont() {
+  if (_termFontInjected) return;
+  _termFontInjected = true;
   const link = document.createElement('link');
   link.rel  = 'stylesheet';
   link.href = 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap';
@@ -1413,44 +1410,38 @@ function warmXterm() {
   return _xtermPromise;
 }
 
+// Reconnect backoff after an unexpected WebSocket close: starts fast (most
+// disconnects are brief network blips) and caps so a stopped/unreachable
+// container doesn't get hammered with connection attempts.
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_MAX_MS  = 15000;
+
 function ConsolePane({ vmid, visible, lightMode }) {
   const containerRef  = useRef(null);
   const termRef       = useRef(null);
   const fitRef        = useRef(null);
   const wsRef         = useRef(null);
   const pingRef       = useRef(null);
+  const reconnectRef  = useRef(null);  // pending reconnect setTimeout id
   const readyRef      = useRef(false); // true after Proxmox sends "OK"
   const sendStrRef    = useRef(null);  // current terminal's send function (for _activeTerm cleanup)
   const lightModeRef  = useRef(lightMode); // kept current so the async creation closure uses latest value
 
   useEffect(() => { lightModeRef.current = lightMode; }, [lightMode]);
 
-  // Live-update terminal colours and font when the app theme toggles. The font
-  // change can shift cell metrics, so re-fit and notify the PTY of the new size.
+  // Live-update terminal colours when the app theme toggles. Font is constant
+  // across themes, so cell metrics don't change and no re-fit is needed.
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    term.options.theme      = lightMode ? LIGHT_TERM_THEME : DARK_TERM_THEME;
-    term.options.fontFamily = lightMode ? LIGHT_TERM_FONT  : DARK_TERM_FONT;
-    term.options.fontSize   = lightMode ? LIGHT_TERM_FONT_SIZE : DARK_TERM_FONT_SIZE;
-    if (lightMode) injectLightTermFont();
-
-    const refit = () => {
-      try {
-        fitRef.current && fitRef.current.fit();
-        if (readyRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
-          wsRef.current.send(`1:${term.cols}:${term.rows}:`);
-        }
-      } catch {}
-    };
-    requestAnimationFrame(refit);
-    if (lightMode) document.fonts.load(`14px "JetBrains Mono"`).then(refit).catch(() => {});
+    term.options.theme = lightMode ? LIGHT_TERM_THEME : DARK_TERM_THEME;
   }, [lightMode]);
 
   useEffect(() => {
     injectXtermCss();
-    if (lightModeRef.current) injectLightTermFont();
+    injectTermFont();
     let destroyed = false;
+    let attempt   = 0; // consecutive failed (re)connection attempts, for backoff
 
     (async () => {
       const [{ Terminal }, { FitAddon }] = await warmXterm();
@@ -1458,8 +1449,8 @@ function ConsolePane({ vmid, visible, lightMode }) {
 
       const term = new Terminal({
         theme:       lightModeRef.current ? LIGHT_TERM_THEME : DARK_TERM_THEME,
-        fontFamily:  lightModeRef.current ? LIGHT_TERM_FONT  : DARK_TERM_FONT,
-        fontSize:    lightModeRef.current ? LIGHT_TERM_FONT_SIZE : DARK_TERM_FONT_SIZE,
+        fontFamily:  TERM_FONT,
+        fontSize:    TERM_FONT_SIZE,
         cursorStyle: 'block',
         scrollback:   2000,
       });
@@ -1478,47 +1469,21 @@ function ConsolePane({ vmid, visible, lightMode }) {
         if (destroyed || !fitRef.current) return;
         try {
           fitRef.current.fit();
-          if (readyRef.current && ws.readyState === WebSocket.OPEN) {
+          const ws = wsRef.current;
+          if (readyRef.current && ws?.readyState === WebSocket.OPEN) {
             ws.send(`1:${term.cols}:${term.rows}:`);
           }
         } catch {}
       });
       ro.observe(containerRef.current);
 
-      // WebSocket to our server-side proxy — no Proxmox cookies needed
-      const proto  = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsPath = vmid === 'node' ? '/api/node/termproxy' : `/api/lxc/${vmid}/termproxy`;
-      const ws     = new WebSocket(`${proto}//${location.host}${wsPath}`, ['binary']);
-      ws.binaryType = 'arraybuffer';
-      wsRef.current = ws;
-
-      ws.onmessage = e => {
-        const data = new Uint8Array(e.data instanceof ArrayBuffer ? e.data : new TextEncoder().encode(e.data));
-        if (!readyRef.current) {
-          // Proxmox sends "OK" (0x4F 0x4B) to confirm auth; anything after is terminal data
-          if (data[0] === 79 && data[1] === 75) {
-            readyRef.current = true;
-            if (data.length > 2) term.write(data.slice(2));
-            // Double-RAF: wait for pane layout to settle, then fit and push size.
-            // We always send 1:cols:rows: explicitly — onResize won't fire if the
-            // terminal was already fit to these dimensions during setup.
-            requestAnimationFrame(() => requestAnimationFrame(() => {
-              fit.fit();
-              ws.send(`1:${term.cols}:${term.rows}:`);
-              term.focus();
-            }));
-          }
-          // else: still authenticating, ignore
-        } else {
-          term.write(data);
-        }
-      };
-
       // Proxmox input protocol: "0:" + UTF-8 byte length + ":" + data
       // Register this terminal as active on every keystroke so the tmux prefix
       // button always targets whichever pane the user last interacted with.
+      // Reads wsRef.current so it keeps working across reconnects.
       const sendStr = str => {
-        if (ws.readyState === WebSocket.OPEN && readyRef.current) {
+        const ws = wsRef.current;
+        if (ws?.readyState === WebSocket.OPEN && readyRef.current) {
           ws.send(`0:${new TextEncoder().encode(str).length}:${str}`);
         }
       };
@@ -1538,23 +1503,71 @@ function ConsolePane({ vmid, visible, lightMode }) {
 
       // Proxmox resize protocol: "1:cols:rows:"
       term.onResize(({ cols, rows }) => {
-        if (ws.readyState === WebSocket.OPEN && readyRef.current) {
+        const ws = wsRef.current;
+        if (ws?.readyState === WebSocket.OPEN && readyRef.current) {
           ws.send(`1:${cols}:${rows}:`);
         }
       });
 
-      // Keepalive ping every 30 s (Proxmox closes idle connections otherwise)
-      pingRef.current = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) ws.send('2');
-      }, 30000);
+      // Opens the WebSocket to our server-side proxy and wires up its lifecycle.
+      // Re-invoked automatically on unexpected close (with capped backoff) so
+      // a dropped connection recovers on its own — each (re)connect gets a
+      // fresh PTY/shell from Proxmox, same as manually closing and reopening
+      // the pane via its tab.
+      function connect() {
+        if (destroyed) return;
+        readyRef.current = false;
 
-      ws.onclose = () => {
-        clearInterval(pingRef.current);
-        if (!destroyed && termRef.current) term.writeln('\r\n\x1b[2m[disconnected]\x1b[0m');
-      };
-      ws.onerror = () => {
-        if (!destroyed && termRef.current) term.writeln('\r\n\x1b[31m[connection error]\x1b[0m');
-      };
+        const proto  = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsPath = vmid === 'node' ? '/api/node/termproxy' : `/api/lxc/${vmid}/termproxy`;
+        const ws     = new WebSocket(`${proto}//${location.host}${wsPath}`, ['binary']);
+        ws.binaryType = 'arraybuffer';
+        wsRef.current = ws;
+
+        ws.onmessage = e => {
+          const data = new Uint8Array(e.data instanceof ArrayBuffer ? e.data : new TextEncoder().encode(e.data));
+          if (!readyRef.current) {
+            // Proxmox sends "OK" (0x4F 0x4B) to confirm auth; anything after is terminal data
+            if (data[0] === 79 && data[1] === 75) {
+              readyRef.current = true;
+              const reconnected = attempt > 0;
+              attempt = 0;
+              if (data.length > 2) term.write(data.slice(2));
+              if (reconnected) term.writeln('\r\n\x1b[32m[reconnected]\x1b[0m');
+              // Double-RAF: wait for pane layout to settle, then fit and push size.
+              // We always send 1:cols:rows: explicitly — onResize won't fire if the
+              // terminal was already fit to these dimensions during setup.
+              requestAnimationFrame(() => requestAnimationFrame(() => {
+                fit.fit();
+                ws.send(`1:${term.cols}:${term.rows}:`);
+                if (!reconnected) term.focus();
+              }));
+            }
+            // else: still authenticating, ignore
+          } else {
+            term.write(data);
+          }
+        };
+
+        // Keepalive ping every 30 s (Proxmox closes idle connections otherwise)
+        pingRef.current = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) ws.send('2');
+        }, 30000);
+
+        ws.onclose = () => {
+          clearInterval(pingRef.current);
+          if (destroyed || !termRef.current) return;
+          attempt += 1;
+          const delay = Math.min(RECONNECT_BASE_MS * 2 ** (attempt - 1), RECONNECT_MAX_MS);
+          term.writeln(`\r\n\x1b[2m[disconnected — reconnecting in ${Math.round(delay / 1000)}s...]\x1b[0m`);
+          reconnectRef.current = setTimeout(connect, delay);
+        };
+        ws.onerror = () => {
+          if (!destroyed && termRef.current) term.writeln('\r\n\x1b[31m[connection error]\x1b[0m');
+        };
+      }
+
+      connect();
 
       return () => ro.disconnect();
     })();
@@ -1563,6 +1576,7 @@ function ConsolePane({ vmid, visible, lightMode }) {
       destroyed = true;
       if (_activeTerm.send === sendStrRef.current) _activeTerm.send = null;
       clearInterval(pingRef.current);
+      clearTimeout(reconnectRef.current);
       wsRef.current?.close();
       termRef.current?.dispose();
       termRef.current = null;
