@@ -1336,6 +1336,18 @@ function MobileKeyRow({ onClose }) {
     return () => { vv.removeEventListener('resize', update); vv.removeEventListener('scroll', update); };
   }, []);
 
+  // Buttons fire on pointerdown (not click) with preventDefault. Without this,
+  // a tap's default focus-shift blurs the xterm <textarea>: the soft keyboard
+  // closes, kbInset drops to 0, and the whole row jumps to bottom:0 mid-tap —
+  // moving the button out from under the finger before "click" ever fires
+  // (the classic mobile "first tap does nothing" bug). preventDefault on
+  // pointerdown keeps the textarea focused, so the row never moves and the
+  // press registers immediately, with or without the keyboard open.
+  function press(e, fn) {
+    e.preventDefault();
+    fn();
+  }
+
   function tap(id, seq) {
     if (_activeTerm.send) _activeTerm.send(seq);
     setFlash(id);
@@ -1363,12 +1375,16 @@ function MobileKeyRow({ onClose }) {
     fontWeight:    'bold',
     fontSize:      '15px',
     cursor:        'pointer',
+    touchAction:   'manipulation',
+    webkitUserSelect: 'none',
+    userSelect:    'none',
+    webkitTapHighlightColor: 'transparent',
     transition:    'color 0.12s, background 0.12s',
   };
   const litStyle = { color: C.white, background: C.amber + '55' };
 
   const keyBtn = (id, label, seq, opts) => h('button', {
-    onClick: () => tap(id, seq),
+    onPointerDown: e => press(e, () => tap(id, seq)),
     style: { ...btnBase, ...(opts || {}), ...(flash === id ? litStyle : {}) },
   }, label);
 
@@ -1385,8 +1401,9 @@ function MobileKeyRow({ onClose }) {
     },
   },
     keyBtn('esc', 'ESC', '\x1b'),
+    keyBtn('tab', 'TAB', '\x09'),
     h('button', {
-      onClick: toggleCtrl,
+      onPointerDown: e => press(e, toggleCtrl),
       style: { ...btnBase, letterSpacing: '0.5px', ...(armed ? litStyle : {}) },
     }, 'CTRL'),
     keyBtn('left',  '◀', '\x1b[D'),
@@ -1425,6 +1442,7 @@ function ConsolePane({ vmid, visible, lightMode }) {
   const reconnectRef  = useRef(null);  // pending reconnect setTimeout id
   const readyRef      = useRef(false); // true after Proxmox sends "OK"
   const sendStrRef    = useRef(null);  // current terminal's send function (for _activeTerm cleanup)
+  const focusHandlerRef = useRef(null); // textarea 'focus' listener (for _activeTerm cleanup)
   const lightModeRef  = useRef(lightMode); // kept current so the async creation closure uses latest value
 
   useEffect(() => { lightModeRef.current = lightMode; }, [lightMode]);
@@ -1500,6 +1518,13 @@ function ConsolePane({ vmid, visible, lightMode }) {
         }
         sendStr(d);
       });
+
+      // Tapping into a pane (or it being auto-focused) should retarget the mobile
+      // key row immediately — not just after the user's first keystroke. Without
+      // this, switching tabs and pressing a key-row button before typing anything
+      // sends to whichever pane was last typed into instead of the one on screen.
+      focusHandlerRef.current = () => { _activeTerm.send = sendStr; };
+      term.textarea?.addEventListener('focus', focusHandlerRef.current);
 
       // Proxmox resize protocol: "1:cols:rows:"
       term.onResize(({ cols, rows }) => {
@@ -1578,6 +1603,7 @@ function ConsolePane({ vmid, visible, lightMode }) {
       clearInterval(pingRef.current);
       clearTimeout(reconnectRef.current);
       wsRef.current?.close();
+      if (focusHandlerRef.current) termRef.current?.textarea?.removeEventListener('focus', focusHandlerRef.current);
       termRef.current?.dispose();
       termRef.current = null;
       fitRef.current  = null;
