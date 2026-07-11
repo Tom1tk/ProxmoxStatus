@@ -144,6 +144,11 @@ class ProxmoxClient {
         mem: stat ? (stat.mem && stat.maxmem ? stat.mem / stat.maxmem : 0) : 0,
         disk_read:  diskRead,
         disk_write: diskWrite,
+        maxcpu:  stat ? (stat.cpus    || 0) : 0,
+        memused: stat ? (stat.mem     || 0) : 0,
+        maxmem:  stat ? (stat.maxmem  || 0) : 0,
+        disk:    stat ? (stat.disk    || 0) : 0,
+        maxdisk: stat ? (stat.maxdisk || 0) : 0,
       };
     }).filter(Boolean);
 

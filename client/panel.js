@@ -84,6 +84,9 @@ const LIGHT_TERM_THEME = {
 // themes use JetBrains Mono (lazy-loaded from Google Fonts).
 const TERM_FONT      = "'JetBrains Mono', 'Courier New', monospace";
 const TERM_FONT_SIZE = 12;
+// Mirrors style.css's html/body default — used to opt specific elements back
+// out of TERM_FONT where it's applied to a whole section.
+const DEFAULT_FONT = "'Glass TTY VT220', 'Courier New', monospace";
 
 let _termFontInjected = false;
 function injectTermFont() {
@@ -115,6 +118,22 @@ function bytesToMbps(bytesPerSec) {
 
 function pct(val) {
   return Math.round((val || 0) * 100);
+}
+
+// Floors to 2 significant figures and renders as GiB (≥1024 MiB) or MiB.
+// "Floor" per-spec so the displayed usage never reads higher than actual.
+function fmtSize2(bytes) {
+  const mb = (bytes || 0) / 1048576;
+  const floorSig2 = v => (v >= 10 ? Math.floor(v) : Math.floor(v * 10) / 10);
+  if (mb >= 1024) return floorSig2(mb / 1024) + 'gb';
+  return floorSig2(mb) + 'mb';
+}
+
+// Threshold colour bands matching LedBar's default green/amber/red logic.
+function barColor(frac) {
+  if (frac >= 0.9) return C.red;
+  if (frac >= 0.7) return C.amberHi;
+  return C.greenHi;
 }
 
 function timeSince(ts) {
@@ -627,7 +646,7 @@ function LxcCell({ lxc, flickerRef, openVmid, setOpenVmid }) {
           display: flex; flex-direction: column;
           align-items: center; justify-content: center;
           gap: clamp(4px,0.6vh,8px);
-          background: #00000090;
+          background: ${C.bg}e6;
           backdrop-filter: blur(${open ? 4 : 0}px);
           opacity: ${open ? 1 : 0};
           pointer-events: ${open ? 'auto' : 'none'};
@@ -661,9 +680,9 @@ function LxcCell({ lxc, flickerRef, openVmid, setOpenVmid }) {
                   style: {
                     width: btnSize,
                     height: btnSize,
-                    background: isActive ? col + '28' : 'transparent',
-                    border: `1px solid ${isActive ? col : col + '66'}`,
-                    color: isActive ? col : col + 'bb',
+                    background: isActive ? col + 'aa' : 'transparent',
+                    border: `1px solid ${col}`,
+                    color: col,
                     fontFamily: 'inherit',
                     fontSize: 'clamp(6px,0.7vw,9px)',
                     cursor: pending ? 'default' : 'pointer',
@@ -1131,7 +1150,7 @@ function GpuDetailPanel({ lightMode }) {
 function GpuSection({ gpus, show, lightMode }) {
   if (!show) return null;
   return html`
-    <div style="border-top:1px solid ${C.border};flex-shrink:0;display:flex;min-height:0">
+    <div style="flex-shrink:0;display:flex;min-height:0">
       <!-- Left 30%: existing compact GPU summary rows -->
       <div style="width:30%;min-width:0;border-right:1px solid ${C.borderDim};flex-shrink:0">
         ${gpus && gpus.length > 0
@@ -1143,6 +1162,196 @@ function GpuSection({ gpus, show, lightMode }) {
       <div style="flex:1;min-width:0;overflow-y:auto">
         ${h(GpuDetailPanel, { lightMode })}
       </div>
+    </div>
+  `;
+}
+
+// ─── VBar ────────────────────────────────────────────────────────────────────
+// A single vertical bar that rises from the bottom to `value` (0-1).
+// `centerLabel` overlays a single-line label (e.g. "(2)" cores or "2gb").
+// `centerFraction` overlays a stacked used/total pair with a divider line —
+// used for DISK, whose "used/total" text is too wide for a single thin line.
+function VBar({ value, centerLabel, centerFraction }) {
+  const v = Math.max(0, Math.min(1, value || 0));
+  const labelFs = 'font-size:clamp(7px,0.7vw,10px);color:' + C.white + ';text-shadow:0 0 3px ' + C.bg + ',0 0 3px ' + C.bg + ';white-space:nowrap';
+  return html`
+    <div style="position:relative;width:100%;flex:1;min-height:0;background:${C.bg};border:1px solid ${C.borderDim};overflow:hidden">
+      <div style="
+        position:absolute;left:0;right:0;bottom:0;height:${v * 100}%;
+        background:${barColor(v)};opacity:0.8;
+        transition:height 0.6s ease,background-color 0.6s ease;
+      "></div>
+      ${centerFraction ? html`
+        <div style="position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;align-items:center;pointer-events:none">
+          <span style="${labelFs}">${centerFraction.used}</span>
+          <div style="width:6px;height:1px;background:${C.white};opacity:0.5;margin:2px 0"></div>
+          <span style="${labelFs}">${centerFraction.total}</span>
+        </div>
+      ` : html`
+        <span style="position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);text-align:center;pointer-events:none;${labelFs}">${centerLabel}</span>
+      `}
+    </div>
+  `;
+}
+
+// ─── LxcStatGroup ────────────────────────────────────────────────────────────
+// One LXC's CPU/RAM/DISK bar trio. Re-snaps its displayed numbers from the live
+// `lxc` prop every 10s, on a per-vmid random phase fixed at launch (see
+// _lxcStatOffsets) — so bars don't all visually snap in lockstep.
+function LxcStatGroup({ lxc }) {
+  const liveRef = useRef(lxc);
+  liveRef.current = lxc;
+  const [snap, setSnap] = useState(lxc);
+
+  // Stagger: first paint shows live data; after this LXC's fixed random phase,
+  // re-snap from the ref every 10s. Ref keeps the closure reading fresh data
+  // without restarting the timer on every poll-driven re-render.
+  useEffect(() => {
+    const offset  = _lxcStatOffsets[lxc.vmid] || 0;
+    const doSnap  = () => setSnap(liveRef.current);
+    let interval;
+    const timeout = setTimeout(() => { doSnap(); interval = setInterval(doSnap, 10000); }, offset);
+    return () => { clearTimeout(timeout); clearInterval(interval); };
+  }, [lxc.vmid]);
+
+  const cpuFrac  = snap.cpu || 0;
+  const ramFrac  = snap.mem || 0;
+  const diskFrac = snap.maxdisk ? (snap.disk || 0) / snap.maxdisk : 0;
+
+  const pctFs   = 'font-size:clamp(8px,0.85vw,11px);color:' + C.white + ';text-align:center;min-height:1.2em';
+  const labelFs = 'font-size:clamp(7px,0.75vw,10px);color:' + C.dim + ';text-align:center;flex:1';
+
+  return html`
+    <div style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:64px;height:100%;min-height:0;gap:2px">
+      <div style="display:flex;gap:3px;width:100%;justify-content:center;flex:1;min-height:0">
+        <div style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:0">
+          <span style="${pctFs}">${pct(cpuFrac)}%</span>
+          ${h(VBar, { value: cpuFrac, centerLabel: `(${snap.maxcpu || 0})` })}
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:0">
+          <span style="${pctFs}">${pct(ramFrac)}%</span>
+          ${h(VBar, { value: ramFrac, centerFraction: { used: fmtSize2(snap.memused), total: fmtSize2(snap.maxmem) } })}
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:0">
+          <span style="${pctFs}">${pct(diskFrac)}%</span>
+          ${h(VBar, { value: diskFrac, centerFraction: { used: fmtSize2(snap.disk), total: fmtSize2(snap.maxdisk) } })}
+        </div>
+      </div>
+      <div style="display:flex;gap:3px;width:100%;flex-shrink:0">
+        <span style="${labelFs}">CPU</span>
+        <span style="${labelFs}">RAM</span>
+        <span style="${labelFs}">DISK</span>
+      </div>
+      <div style="
+        font-family:${DEFAULT_FONT};
+        font-size:clamp(10px,1.05vw,14px);color:${C.white};white-space:nowrap;
+        overflow:hidden;text-overflow:ellipsis;max-width:100%;flex-shrink:0;
+      ">${lxc.display_name || lxc.name || lxc.vmid}</div>
+    </div>
+  `;
+}
+
+// Random per-vmid phase (ms), assigned once the first time a running LXC is
+// seen and kept for the page's lifetime — so the 10s display refresh is
+// staggered across containers but stable across re-renders and tab swaps.
+const _lxcStatOffsets = {};
+
+// ─── LxcStatsPanel ───────────────────────────────────────────────────────────
+// Groups are equal flex items that squeeze together as more LXCs come online,
+// same as the squares grid adapting to container count — down to a per-group
+// floor (LxcStatGroup's min-width) below which bars/labels stop being legible.
+// Past that floor the row scrolls horizontally instead of squashing further,
+// with the scrollbar hidden (same treatment as the panes tab strip).
+function LxcStatsPanel({ lxcs }) {
+  injectTermFont();
+  const running = lxcs.filter(l => l.status === 'running').sort((a, b) => Number(a.vmid) - Number(b.vmid));
+  running.forEach(l => {
+    if (!(l.vmid in _lxcStatOffsets)) _lxcStatOffsets[l.vmid] = Math.random() * 10000;
+  });
+
+  if (running.length === 0) {
+    return html`
+      <div style="height:100%;min-height:clamp(140px,18vh,220px);display:flex;align-items:center;justify-content:center;color:${C.dimmer};font-size:clamp(10px,1vw,13px);font-family:${TERM_FONT}">
+        NO RUNNING LXC
+      </div>
+    `;
+  }
+
+  return html`
+    <div class="lxc-stats-row" style="
+      display:flex;gap:clamp(3px,0.6vw,10px);align-items:stretch;
+      padding:clamp(6px,0.8vh,12px) clamp(6px,0.8vw,12px);
+      overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-webkit-overflow-scrolling:touch;
+      height:100%;min-height:clamp(140px,18vh,220px);box-sizing:border-box;
+      font-family:${TERM_FONT};
+    ">
+      ${running.map(lxc => h(LxcStatGroup, { key: lxc.vmid, lxc }))}
+    </div>
+  `;
+}
+
+// ─── BottomSection ───────────────────────────────────────────────────────────
+// Tab strip swapping the GPU panel and the LXC resource panel in the
+// dashboard's bottom slot. When both exist, the GPU panel (normal flow) sets
+// the box height and the LXC panel overlays it absolutely-positioned — so
+// both panels always share an identical height — and a fade+scale transition
+// (identical to the dashboard↔panes swap in App) crossfades between them.
+// Both stay mounted so GPU polling keeps running and LXC stagger phases
+// survive tab swaps.
+function BottomSection({ gpus, lxcs, showGpus, lightMode }) {
+  const [tab, setTab] = useState('gpu');
+  const hasLxcs = lxcs && lxcs.length > 0;
+  if (!showGpus && !hasLxcs) return null;
+
+  const showTabs  = showGpus && hasLxcs;
+  const activeTab = showGpus ? tab : 'lxc';
+
+  const tabBtnStyle = active => ({
+    background:    active ? C.amber + '30' : 'transparent',
+    border:        `1px solid ${active ? C.amber : C.borderDim}`,
+    color:         active ? C.amberHi : C.dim,
+    fontFamily:    'inherit',
+    fontSize:      'clamp(9px,0.9vw,12px)',
+    padding:       '2px 10px',
+    cursor:        'pointer',
+    letterSpacing: '0.5px',
+    marginRight:   '4px',
+  });
+
+  // Only one of the two exists — render it directly, no tabs/crossfade needed.
+  let body;
+  if (!showTabs) {
+    body = !showGpus
+      ? h(LxcStatsPanel, { lxcs })
+      : h(GpuSection, { gpus, show: true, lightMode });
+  } else {
+    const fade = active => ({
+      transition:    'opacity 0.3s ease, transform 0.3s ease',
+      opacity:       active ? 1 : 0,
+      transform:     active ? 'scale(1)' : 'scale(0.96)',
+      pointerEvents: active ? 'auto' : 'none',
+    });
+    body = html`
+      <div style="position:relative">
+        <div style=${fade(activeTab === 'gpu')}>
+          ${h(GpuSection, { gpus, show: true, lightMode })}
+        </div>
+        <div style=${{ position: 'absolute', inset: 0, overflow: 'hidden', ...fade(activeTab === 'lxc') }}>
+          ${h(LxcStatsPanel, { lxcs })}
+        </div>
+      </div>
+    `;
+  }
+
+  return html`
+    <div style="border-top:1px solid ${C.border};flex-shrink:0">
+      ${showTabs ? html`
+        <div style="display:flex;padding:4px clamp(6px,0.8vw,12px);border-bottom:1px solid ${C.borderDim}">
+          <button style=${tabBtnStyle(activeTab === 'gpu')} onClick=${() => setTab('gpu')}>GPU</button>
+          <button style=${tabBtnStyle(activeTab === 'lxc')} onClick=${() => setTab('lxc')}>LXC</button>
+        </div>
+      ` : null}
+      ${body}
     </div>
   `;
 }
@@ -1279,11 +1488,12 @@ function computePaneRects(n, W, H) {
 // Native xterm.js terminal proxied server-side to Proxmox via WebSocket.
 // No Proxmox cookies in the browser — all auth is handled by the dashboard server.
 
-// Hide scrollbars: panes tab strip + xterm.js internal viewport
+// Hide scrollbars: panes tab strip + xterm.js internal viewport + LXC stats row
 { const s = document.createElement('style'); s.textContent = [
   '.panes-tabs::-webkit-scrollbar{display:none}',
   '.xterm-viewport::-webkit-scrollbar{display:none}',
   '.xterm-viewport{scrollbar-width:none}',
+  '.lxc-stats-row::-webkit-scrollbar{display:none}',
 ].join(''); document.head.appendChild(s); }
 
 // Uppercase + remove vowels for compact tab labels, then CSS clips without ellipsis
@@ -1866,8 +2076,8 @@ function App() {
             transform:  ${view === 'dashboard' ? 'scale(1)' : 'scale(0.96)'};
             pointer-events: ${view === 'dashboard' ? 'auto' : 'none'};
           ">
-            ${h(LxcGrid,    { lxcs, cols, flickerRef, openVmid, setOpenVmid })}
-            ${h(GpuSection, { gpus, show: showGpus, lightMode })}
+            ${h(LxcGrid,       { lxcs, cols, flickerRef, openVmid, setOpenVmid })}
+            ${h(BottomSection, { gpus, lxcs, showGpus, lightMode })}
           </div>
 
           <!-- Panes view -->
