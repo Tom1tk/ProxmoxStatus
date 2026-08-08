@@ -839,7 +839,7 @@ function drawGpuHistory(canvas, gpuData, powerLimit, hoverIdx) {
   const maxPwr = powerLimit || 375;
   const metrics = [
     { key: 'temp',  label: 'TEMP',  min: 0, max: 100,   color: null,     unit: '°C', dynColor: v => tempColorForValue(v) },
-    { key: 'power', label: 'PWR',   min: 0, max: Math.max(maxPwr, 375), color: C.tealHi, unit: 'W'  },
+    { key: 'power', label: 'PWR',   min: 0, max: maxPwr, color: C.tealHi, unit: 'W'  },
     { key: 'util',  label: 'GPU%',  min: 0, max: 100,   color: C.greenHi, unit: '%'  },
     { key: 'fan',   label: 'FAN',   min: 0, max: 100,   color: C.amberHi, unit: '%'  },
   ];
@@ -1001,7 +1001,7 @@ function GpuDetailPanel({ lightMode }) {
         const canvas = canvasRefs.current[idx];
         if (!canvas) return;
         const gpu        = (current.gpus || []).find(g => String(g.index) === idx);
-        const powerLimit = gpu ? gpu.power_limit : 200;
+        const powerLimit = gpu ? gpu.power_limit : 375;
         dataRefs.current[idx] = { gpuData, powerLimit };
         drawGpuHistory(canvas, gpuData, powerLimit);
       });
@@ -1030,7 +1030,7 @@ function GpuDetailPanel({ lightMode }) {
     const timeStr = new Date(data.gpuData.ts[i]).toLocaleTimeString('en-US', {
       hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true,
     });
-    const maxPwr  = Math.max(data.powerLimit || 375, 375);
+    const maxPwr  = data.powerLimit || 375;
     const tmpVal  = Math.round(data.gpuData.temp[i]  || 0);
     const pwrVal  = Math.round(data.gpuData.power[i] || 0);
     const utilVal = Math.round(data.gpuData.util[i]  || 0);
@@ -1492,7 +1492,7 @@ function computePaneRects(n, W, H) {
 { const s = document.createElement('style'); s.textContent = [
   '.panes-tabs::-webkit-scrollbar{display:none}',
   '.xterm-viewport::-webkit-scrollbar{display:none}',
-  '.xterm-viewport{scrollbar-width:none}',
+  '.xterm-viewport{scrollbar-width:none;touch-action:pan-y;-webkit-overflow-scrolling:touch}',
   '.lxc-stats-row::-webkit-scrollbar{display:none}',
 ].join(''); document.head.appendChild(s); }
 
