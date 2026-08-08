@@ -1492,7 +1492,9 @@ function computePaneRects(n, W, H) {
 { const s = document.createElement('style'); s.textContent = [
   '.panes-tabs::-webkit-scrollbar{display:none}',
   '.xterm-viewport::-webkit-scrollbar{display:none}',
-  '.xterm-viewport{scrollbar-width:none;touch-action:pan-y;-webkit-overflow-scrolling:touch}',
+  // touch-action:none — scrolling is handled in JS (ConsolePane's touch-to-wheel
+  // translator) so it works for full-screen TUI apps too, not just shell scrollback.
+  '.xterm-viewport{scrollbar-width:none;touch-action:none}',
   '.lxc-stats-row::-webkit-scrollbar{display:none}',
 ].join(''); document.head.appendChild(s); }
 
@@ -1705,6 +1707,35 @@ function ConsolePane({ vmid, visible, lightMode }) {
       });
       ro.observe(containerRef.current);
 
+      // Touch scrolling: xterm.js only scrolls on real 'wheel' events, and only
+      // when the buffer has scrollback (i.e. NOT the alternate screen full-screen
+      // TUI apps like claude/opencode use — there's nothing to scroll back to,
+      // xterm instead converts wheel deltas into Up/Down keys, or into mouse-wheel
+      // reports if the app has enabled mouse tracking). Touch drags never fire
+      // 'wheel' events, so none of that ever ran on mobile. Fix: translate touch
+      // drags into synthetic WheelEvents dispatched on term.element and let
+      // xterm's own handler do the right thing for whichever mode is active.
+      let touchY = null;
+      const onTouchStart = e => { touchY = e.touches.length === 1 ? e.touches[0].clientY : null; };
+      const onTouchMove = e => {
+        if (touchY === null || e.touches.length !== 1) return;
+        const t = e.touches[0];
+        const deltaY = touchY - t.clientY;
+        touchY = t.clientY;
+        if (!deltaY) return;
+        e.preventDefault();
+        term.element?.dispatchEvent(new WheelEvent('wheel', {
+          deltaY, deltaMode: 0, clientX: t.clientX, clientY: t.clientY,
+          bubbles: true, cancelable: true,
+        }));
+      };
+      const onTouchEnd = () => { touchY = null; };
+      const touchTarget = containerRef.current;
+      touchTarget.addEventListener('touchstart', onTouchStart, { passive: true });
+      touchTarget.addEventListener('touchmove', onTouchMove, { passive: false });
+      touchTarget.addEventListener('touchend', onTouchEnd, { passive: true });
+      touchTarget.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
       // Proxmox input protocol: "0:" + UTF-8 byte length + ":" + data
       // Register this terminal as active on every keystroke so the tmux prefix
       // button always targets whichever pane the user last interacted with.
@@ -1804,7 +1835,13 @@ function ConsolePane({ vmid, visible, lightMode }) {
 
       connect();
 
-      return () => ro.disconnect();
+      return () => {
+        ro.disconnect();
+        touchTarget.removeEventListener('touchstart', onTouchStart);
+        touchTarget.removeEventListener('touchmove', onTouchMove);
+        touchTarget.removeEventListener('touchend', onTouchEnd);
+        touchTarget.removeEventListener('touchcancel', onTouchEnd);
+      };
     })();
 
     return () => {
