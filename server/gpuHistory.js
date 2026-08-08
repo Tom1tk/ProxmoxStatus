@@ -104,6 +104,7 @@ function _poll() {
   for (const gpu of gpus) {
     const key = String(gpu.index);
     if (!_bufs[key]) _bufs[key] = _makeBuffer(gpu.name);
+    else _bufs[key].name = gpu.name; // keep in sync if the card at this index was swapped
     _push(_bufs[key], now, gpu.temp, gpu.power_draw, gpu.gpu_util, gpu.mem_util, gpu.fan_pct);
   }
 }
