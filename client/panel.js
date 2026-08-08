@@ -1715,26 +1715,39 @@ function ConsolePane({ vmid, visible, lightMode }) {
       // 'wheel' events, so none of that ever ran on mobile. Fix: translate touch
       // drags into synthetic WheelEvents dispatched on term.element and let
       // xterm's own handler do the right thing for whichever mode is active.
+      //
+      // xterm.js also registers its OWN touchstart/touchmove listeners directly
+      // on term.element (a descendant of this container) and calls
+      // stopPropagation() on them once it decides it "handled" the gesture —
+      // which for the alt-screen case just means silently swallowing it. That
+      // ran before our listener ever saw the event. So we listen in the CAPTURE
+      // phase (fires on the way down, before term.element's bubble-phase
+      // listener) and stopPropagation ourselves, fully taking over every touch
+      // gesture inside the pane rather than racing xterm's internal handler.
       let touchY = null;
-      const onTouchStart = e => { touchY = e.touches.length === 1 ? e.touches[0].clientY : null; };
+      const onTouchStart = e => {
+        touchY = e.touches.length === 1 ? e.touches[0].clientY : null;
+        if (touchY !== null) e.stopPropagation();
+      };
       const onTouchMove = e => {
         if (touchY === null || e.touches.length !== 1) return;
+        e.preventDefault();
+        e.stopPropagation();
         const t = e.touches[0];
         const deltaY = touchY - t.clientY;
         touchY = t.clientY;
         if (!deltaY) return;
-        e.preventDefault();
         term.element?.dispatchEvent(new WheelEvent('wheel', {
           deltaY, deltaMode: 0, clientX: t.clientX, clientY: t.clientY,
           bubbles: true, cancelable: true,
         }));
       };
-      const onTouchEnd = () => { touchY = null; };
+      const onTouchEnd = e => { touchY = null; e.stopPropagation(); };
       const touchTarget = containerRef.current;
-      touchTarget.addEventListener('touchstart', onTouchStart, { passive: true });
-      touchTarget.addEventListener('touchmove', onTouchMove, { passive: false });
-      touchTarget.addEventListener('touchend', onTouchEnd, { passive: true });
-      touchTarget.addEventListener('touchcancel', onTouchEnd, { passive: true });
+      touchTarget.addEventListener('touchstart', onTouchStart, { passive: true, capture: true });
+      touchTarget.addEventListener('touchmove', onTouchMove, { passive: false, capture: true });
+      touchTarget.addEventListener('touchend', onTouchEnd, { passive: true, capture: true });
+      touchTarget.addEventListener('touchcancel', onTouchEnd, { passive: true, capture: true });
 
       // Proxmox input protocol: "0:" + UTF-8 byte length + ":" + data
       // Register this terminal as active on every keystroke so the tmux prefix
@@ -1837,10 +1850,10 @@ function ConsolePane({ vmid, visible, lightMode }) {
 
       return () => {
         ro.disconnect();
-        touchTarget.removeEventListener('touchstart', onTouchStart);
-        touchTarget.removeEventListener('touchmove', onTouchMove);
-        touchTarget.removeEventListener('touchend', onTouchEnd);
-        touchTarget.removeEventListener('touchcancel', onTouchEnd);
+        touchTarget.removeEventListener('touchstart', onTouchStart, { capture: true });
+        touchTarget.removeEventListener('touchmove', onTouchMove, { capture: true });
+        touchTarget.removeEventListener('touchend', onTouchEnd, { capture: true });
+        touchTarget.removeEventListener('touchcancel', onTouchEnd, { capture: true });
       };
     })();
 
