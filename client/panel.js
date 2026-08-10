@@ -1734,7 +1734,7 @@ function ConsolePane({ vmid, visible, lightMode }) {
         e.preventDefault();
         e.stopPropagation();
         const t = e.touches[0];
-        const deltaY = t.clientY - touchY;
+        const deltaY = touchY - t.clientY;
         touchY = t.clientY;
         if (!deltaY) return;
         term.element?.dispatchEvent(new WheelEvent('wheel', {
