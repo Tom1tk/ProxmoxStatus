@@ -738,7 +738,7 @@ function LxcGrid({ lxcs, cols, flickerRef, openVmid, setOpenVmid }) {
 }
 
 // ─── GpuRow ──────────────────────────────────────────────────────────────────
-function GpuRow({ gpu }) {
+function GpuRow({ gpu, selected, onSelect }) {
   const hasData = gpu.gpu_util != null;
   const memPct  = (gpu.mem_util || 0) / 100;
   const utilPct = (gpu.gpu_util || 0) / 100;
@@ -747,13 +747,19 @@ function GpuRow({ gpu }) {
   const barH    = 'clamp(6px,0.8vh,11px)';
 
   return html`
-    <div style="
+    <div
+      onClick=${() => onSelect(gpu.index)}
+      style="
       padding: clamp(4px,0.5vh,8px) clamp(6px,0.8vw,12px);
       border-top: 1px solid ${C.borderDim};
+      border-left: 3px solid ${selected ? C.blueHi : 'transparent'};
+      background: ${selected ? C.blueHi + '14' : 'transparent'};
       font-size: clamp(11px,1.1vw,15px);
+      cursor: pointer;
     ">
-      <!-- Top row: name OLED + live stats -->
+      <!-- Top row: idx + name OLED + live stats -->
       <div style="display:flex;align-items:center;gap:clamp(6px,0.8vw,12px);margin-bottom:clamp(3px,0.4vh,6px)">
+        <span style="color:${C.dim};font-size:clamp(10px,1vw,13px);flex-shrink:0">${gpu.index}</span>
         <div style="
           background:${C.bg};border:1px solid ${C.borderDim};
           padding:2px clamp(4px,0.5vw,8px);
@@ -778,12 +784,20 @@ function GpuRow({ gpu }) {
       </div>
 
       <!-- MEM bar — full width -->
-      <div style="display:flex;align-items:center;gap:6px">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:clamp(2px,0.3vh,4px)">
         <span style="width:${labelW};flex-shrink:0;color:${C.dim};font-size:clamp(10px,1vw,13px)">MEM</span>
         ${h(LedBar, { value: memPct, fluid: true, height: parseInt(barH) || 8, color: C.purpleHi, warn: 0.8, crit: 0.95, segments: 30 })}
         <span style="width:${valW};flex-shrink:0;text-align:right;color:${C.white};font-size:clamp(10px,1vw,13px)">
           ${hasData ? `${gpu.mem_util}%` : '--'}
         </span>
+      </div>
+
+      <!-- PWR / FAN — compact text line -->
+      <div style="display:flex;align-items:center;gap:6px;font-size:clamp(10px,1vw,13px)">
+        <span style="color:${C.dim}">PWR</span>
+        <span style="color:${C.tealHi}">${gpu.power_w != null ? fmt(gpu.power_w, 0) : '--'}/${gpu.power_limit != null ? fmt(gpu.power_limit, 0) : '--'}W</span>
+        <span style="color:${C.dim};margin-left:auto">FAN</span>
+        <span style="color:${C.amberHi}">${gpu.fan_pct != null ? gpu.fan_pct + '%' : '--'}</span>
       </div>
     </div>
   `;
@@ -960,7 +974,7 @@ function drawGpuHistory(canvas, gpuData, powerLimit, hoverIdx) {
 }
 
 // ─── GpuDetailPanel ──────────────────────────────────────────────────────────
-function GpuDetailPanel({ lightMode }) {
+function GpuDetailPanel({ lightMode, selectedIdx }) {
   const [current,   setCurrent]   = useState({ gpus: [] });
   const [history,   setHistory]   = useState({});
   const [windowSec, setWindowSec] = useState(300);
@@ -1069,32 +1083,8 @@ function GpuDetailPanel({ lightMode }) {
     }
   }
 
-  const gpus = current.gpus || [];
-  const fs2 = 'clamp(10px,1vw,14px)';
-  const fs3 = 'clamp(9px,0.9vw,13px)';
-
   return html`
     <div style="padding:clamp(4px,0.5vh,8px) clamp(6px,0.8vw,10px);display:flex;flex-direction:column;gap:clamp(3px,0.4vh,5px)">
-
-      <!-- Live table -->
-      <div style="font-size:${fs3}">
-        <div style="display:grid;grid-template-columns:2.5em 1fr 3.5em 6.5em 3em 3em 3em;gap:3px 6px;color:${C.dim};padding-bottom:2px;border-bottom:1px solid ${C.borderDim};letter-spacing:0.3px">
-          <span>IDX</span><span>NAME</span><span>TEMP</span><span>POWER</span><span>GPU%</span><span>MEM%</span><span>FAN%</span>
-        </div>
-        ${!gpus || gpus.length === 0 ? html`
-          <div style="color:${C.dimmer};padding:4px 0">NO GPU DATA</div>
-        ` : gpus.map(gpu => html`
-          <div key=${gpu.index} style="display:grid;grid-template-columns:2.5em 1fr 3.5em 6.5em 3em 3em 3em;gap:3px 6px;padding:2px 0;align-items:center;color:${C.white}">
-            <span style="color:${C.dim}">${gpu.index}</span>
-            <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:${C.purpleHi}">${gpu.name || '--'}</span>
-            <span style="color:${tempColorForValue(gpu.temp || 0)}">${gpu.temp != null ? gpu.temp + '°C' : '--'}</span>
-            <span style="color:${C.tealHi}">${gpu.power_draw != null ? fmt(gpu.power_draw, 0) : '--'}/${gpu.power_limit != null ? fmt(gpu.power_limit, 0) : '--'}W</span>
-            <span>${gpu.gpu_util != null ? gpu.gpu_util + '%' : '--'}</span>
-            <span>${gpu.mem_util != null ? gpu.mem_util + '%' : '--'}</span>
-            <span style="color:${C.amberHi}">${gpu.fan_pct != null ? gpu.fan_pct + '%' : '--'}</span>
-          </div>
-        `)}
-      </div>
 
       <!-- Time window selector -->
       <div style="display:flex;gap:4px;align-items:center;flex-wrap:nowrap">
@@ -1115,8 +1105,8 @@ function GpuDetailPanel({ lightMode }) {
         }, w.label))}
       </div>
 
-      <!-- History graphs, one per GPU -->
-      ${Object.entries(history).sort(([a],[b]) => Number(a) - Number(b)).map(([idx, gpuData]) => html`
+      <!-- History graph — selected GPU only -->
+      ${Object.entries(history).filter(([idx]) => Number(idx) === selectedIdx).map(([idx, gpuData]) => html`
         <div key=${idx} style="border:1px solid ${C.borderDim};flex-shrink:0">
           <div style="padding:2px 4px;font-size:clamp(8px,0.8vw,11px);color:${C.purpleHi};border-bottom:1px solid ${C.borderDim};background:${C.bg}80;letter-spacing:0.5px">
             ${gpuData.name || 'GPU ' + idx}
@@ -1148,19 +1138,20 @@ function GpuDetailPanel({ lightMode }) {
 
 // ─── GpuSection ───────────────────────────────────────────────────────────────
 function GpuSection({ gpus, show, lightMode }) {
+  const [selectedIdx, setSelectedIdx] = useState(1);
   if (!show) return null;
   return html`
     <div style="flex-shrink:0;display:flex;min-height:0">
-      <!-- Left 30%: existing compact GPU summary rows -->
+      <!-- Left 30%: compact GPU summary rows (click to select graph on the right) -->
       <div style="width:30%;min-width:0;border-right:1px solid ${C.borderDim};flex-shrink:0">
         ${gpus && gpus.length > 0
-          ? gpus.map(g => h(GpuRow, { key: g.id || g.index, gpu: g }))
+          ? gpus.map(g => h(GpuRow, { key: g.id || g.index, gpu: g, selected: g.index === selectedIdx, onSelect: setSelectedIdx }))
           : html`<div style="padding:8px;color:${C.dimmer};font-size:clamp(10px,1vw,13px)">NO GPU</div>`
         }
       </div>
-      <!-- Right 70%: GPU detail panel with live table + history graphs -->
+      <!-- Right 70%: GPU detail panel — history graph for the selected GPU -->
       <div style="flex:1;min-width:0;overflow-y:auto">
-        ${h(GpuDetailPanel, { lightMode })}
+        ${h(GpuDetailPanel, { lightMode, selectedIdx })}
       </div>
     </div>
   `;

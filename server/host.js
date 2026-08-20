@@ -25,6 +25,7 @@ function _buildGpuCache() {
     temp:         gpu.temp,
     mem_util:     gpu.mem_util,
     power_w:      gpu.power_draw,
+    power_limit:  gpu.power_limit,
     fan_pct:      gpu.fan_pct,
   }));
 }
