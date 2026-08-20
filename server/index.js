@@ -221,8 +221,8 @@ const cfg = getConfig();
 const port = cfg.port || 3000;
 
 client.startPolling();
-host.startPolling();
 gpuHistory.startPolling();
+host.startPolling();
 
 const server = app.listen(port, '0.0.0.0', () => {
   console.log(`[panel] Proxmox Status Panel running at http://0.0.0.0:${port}`);
