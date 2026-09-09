@@ -153,6 +153,12 @@ export function resolveCellColor(seg, theme, lightMode) {
   let fg = { hex: resolveSpecHex(seg.fgSpec, 'fg', theme), spec: seg.fgSpec };
   let bg = { hex: resolveSpecHex(seg.bgSpec, 'bg', theme), spec: seg.bgSpec };
   if (seg.inverse) { const t = fg; fg = bg; bg = t; }
+  // Block-cursor rendering: xterm's own caret is invisible (the xterm host
+  // sits at opacity:0 in reader mode), so the buffer's live cursor cell is
+  // marked at extraction time and rendered here as a second inverse swap —
+  // the same visual effect a real terminal's block cursor has, and XORs
+  // correctly against a cell that's already \e[7m inverse.
+  if (seg.cursor) { const t = fg; fg = bg; bg = t; }
 
   const bgTransparent = bg.hex.toLowerCase() === theme.background.toLowerCase();
 
@@ -232,6 +238,29 @@ function isBlankSegs(segs) {
   return segs.every(s => s.text.trim() === '');
 }
 
+// Rows are extracted up to term.cols, but most rows don't use the full
+// width — the remaining cells are real (default-styled, space) buffer
+// content, not markers of anything. Left as-is they render as literal
+// trailing spaces under white-space:pre, padding every row's DOM width out
+// to the terminal's full column count and forcing a horizontal scrollbar
+// even though the visible glyphs end far earlier. Never trims a segment
+// carrying a non-default background (a filled status bar / selection
+// highlight is real content) or the cursor cell itself.
+function trimTrailingBlank(segs) {
+  const out = segs.slice();
+  while (out.length) {
+    const last = out[out.length - 1];
+    const blankSafe = !last.cursor && last.bgSpec.mode === 'default' && !last.underline && !last.strike && !last.inverse;
+    if (!blankSafe) break;
+    const trimmed = last.text.replace(/ +$/, '');
+    if (trimmed === last.text) break;
+    if (trimmed === '') { out.pop(); continue; }
+    out[out.length - 1] = { ...last, text: trimmed };
+    break;
+  }
+  return out;
+}
+
 // Coalesces adjacent same-style segments — needed after joining two rows
 // together, since the last run of one row and the first run of the next may
 // share a style but were grouped separately per-row.
@@ -256,6 +285,16 @@ export function extractReaderLines(term, maxLines) {
   const total = buf.length;
   const start = Math.max(0, total - maxLines);
   const cell = buf.getNullCell();
+  // Absolute row of the live cursor, so the extraction loop can mark that
+  // one cell instead of the reader silently having no cursor indicator at
+  // all (the underlying xterm host is opacity:0, so its own caret is
+  // invisible too). isCursorHidden isn't public API (no stable alternative
+  // exists in 5.5.0) — read defensively so a future xterm internals rename
+  // degrades to "always show" rather than throwing.
+  let cursorHidden = false;
+  try { cursorHidden = term._core?._coreService?.isCursorHidden === true; } catch {}
+  const cursorAbsY = cursorHidden ? -1 : buf.baseY + buf.cursorY;
+  const cursorX = buf.cursorX;
 
   const rows = [];
   for (let y = start; y < total; y++) {
@@ -263,21 +302,27 @@ export function extractReaderLines(term, maxLines) {
     if (!line) continue;
     const segs = [];
     const lineLen = Math.min(line.length, cols);
+    const isCursorRow = y === cursorAbsY;
     for (let x = 0; x < lineLen; x++) {
       line.getCell(x, cell);
       if (cell.getWidth() === 0) continue; // trailing half of a wide glyph
       const ch = cell.getChars() || ' ';
-      const key = styleKey(cell);
+      const isCursorCell = isCursorRow && x === cursorX;
+      // A unique key suffix forces the cursor cell into its own segment —
+      // never merged with neighbours — so it can be highlighted and never
+      // stripped as trailing blank below.
+      const key = isCursorCell ? styleKey(cell) + ':CUR' : styleKey(cell);
       const last = segs[segs.length - 1];
-      if (last && last.key === key) {
+      if (!isCursorCell && last && last.key === key) {
         last.text += ch;
       } else {
         const style = styleFromCell(cell, key);
         style.text = ch;
+        if (isCursorCell) style.cursor = true;
         segs.push(style);
       }
     }
-    rows.push({ isWrapped: !!line.isWrapped, segs });
+    rows.push({ isWrapped: !!line.isWrapped, segs: trimTrailingBlank(segs) });
   }
 
   const logical = [];
