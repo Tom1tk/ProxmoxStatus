@@ -283,7 +283,11 @@ export function extractReaderLines(term, maxLines) {
   const isAlt = buf.type === 'alternate';
   const cols = term.cols;
   const total = buf.length;
-  const start = Math.max(0, total - maxLines);
+  // The alt buffer IS the current frame — term.rows, never more. buf.length
+  // can still report a taller value here (leftover rows from before a
+  // resize, at a stale term.cols), and walking into them is exactly what
+  // surfaced as "mangled" wide/garbled content when scrolling up in tmux/vim.
+  const start = Math.max(0, total - (isAlt ? Math.min(maxLines, term.rows) : maxLines));
   const cell = buf.getNullCell();
   // Absolute row of the live cursor, so the extraction loop can mark that
   // one cell instead of the reader silently having no cursor indicator at
@@ -552,11 +556,18 @@ export function ReaderView({ term, size, theme, lightMode, onGeometry, onTap }) 
   // iOS while the container still has residual scroll momentum. Calling
   // focus() on an already-focused textarea is a harmless no-op in every
   // browser, so letting both fire just means one of them backs up the other.
+  // A long-press-to-select is not a tap, even though it starts as one: the
+  // finger doesn't move, so the distance check alone can't tell them apart.
+  // Two more guards catch it — press duration, and a live text selection
+  // (blur()+focus() in handleReaderTap would otherwise clear the selection
+  // the user just made, which is what made copy feel "unreliable").
   const pointerStartRef = useRef(null);
-  function onPointerDown(e) { pointerStartRef.current = { x: e.clientX, y: e.clientY }; }
+  function onPointerDown(e) { pointerStartRef.current = { x: e.clientX, y: e.clientY, t: Date.now() }; }
   function tryTap(e) {
     const start = pointerStartRef.current;
     if (!start || !onTap) return;
+    if (Date.now() - start.t > 400) return;
+    if (!(window.getSelection?.()?.isCollapsed ?? true)) return;
     if (Math.hypot(e.clientX - start.x, e.clientY - start.y) < 10) onTap();
   }
 
