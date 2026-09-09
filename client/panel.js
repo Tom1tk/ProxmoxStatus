@@ -80,12 +80,13 @@ const LIGHT_TERM_THEME = {
   white:   '#706858', brightWhite:   '#1a1610',
 };
 
-// Terminal font — the scanline "Glass TTY VT220" font reads poorly, so both
-// themes use JetBrains Mono (lazy-loaded from Google Fonts).
+// Terminal font — the scanline "Glass TTY VT220" font reads poorly at small
+// sizes, so this is the page-wide default (mirrors style.css's html/body font),
+// lazy-loaded from Google Fonts.
 const TERM_FONT      = "'JetBrains Mono', 'Courier New', monospace";
 const TERM_FONT_SIZE = 12;
-// Mirrors style.css's html/body default — used to opt specific elements back
-// out of TERM_FONT where it's applied to a whole section.
+// The VT220 scanline font, kept only for the main title bar ('PANES' button,
+// panel_title) where its retro look is the point.
 const DEFAULT_FONT = "'Glass TTY VT220', 'Courier New', monospace";
 
 let _termFontInjected = false;
@@ -97,6 +98,9 @@ function injectTermFont() {
   link.href = 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap';
   document.head.appendChild(link);
 }
+// TERM_FONT is now the page-wide default (see style.css), so load it immediately
+// rather than waiting for a specific panel to mount.
+injectTermFont();
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function formatUptime(seconds) {
@@ -343,7 +347,7 @@ function HeaderBar({ node, lxcs, config, view, setView, paneStates, onTabClick, 
           borderRight:  `1px solid ${C.borderDim}`,
           marginRight:  narrow ? '4px' : '6px',
           cursor:       'pointer',
-          fontFamily:   'inherit',
+          fontFamily:   DEFAULT_FONT,
           transition:   'color 0.15s, background 0.15s',
         },
       }, 'PANES'),
@@ -475,7 +479,7 @@ function HeaderBar({ node, lxcs, config, view, setView, paneStates, onTabClick, 
       boxSizing:    'border-box',
     },
   },
-    h('span', { style: { color: C.amberHi, fontWeight: 'bold', flexShrink: 0, letterSpacing: narrow ? 0 : '1px' } },
+    h('span', { style: { color: C.amberHi, fontWeight: 'bold', flexShrink: 0, letterSpacing: narrow ? 0 : '1px', fontFamily: DEFAULT_FONT } },
       config ? config.panel_title : 'HOST'),
 
     sep,
@@ -1234,7 +1238,7 @@ function LxcStatGroup({ lxc }) {
         <span style="${labelFs}">DISK</span>
       </div>
       <div style="
-        font-family:${DEFAULT_FONT};
+        font-family:${TERM_FONT};
         font-size:clamp(10px,1.05vw,14px);color:${C.white};white-space:nowrap;
         overflow:hidden;text-overflow:ellipsis;max-width:100%;flex-shrink:0;
       ">${lxc.display_name || lxc.name || lxc.vmid}</div>
