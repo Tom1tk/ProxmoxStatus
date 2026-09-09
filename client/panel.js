@@ -1423,16 +1423,16 @@ function Footer({ config, node, lightMode, setLightMode, view, readerMode, setRe
     ">
       <span>PROXMOX STATUS PANEL</span>
       <span style="display:flex;align-items:center;gap:clamp(6px,0.8vw,10px)">
-        ${view === 'panes' ? h('button', {
-          onClick: toggleReader,
-          title: readerMode ? 'Exit reader mode' : 'Reader mode',
-          style: iconBtnStyle(readerMode),
-        }, '▤') : null}
         ${view === 'panes' && readerMode ? h('button', {
           onClick: cycleReaderSize,
           title: 'Text size',
           style: iconBtnStyle(false),
         }, (READER_SIZES[readerSize] || READER_SIZES.m).label) : null}
+        ${view === 'panes' ? h('button', {
+          onClick: toggleReader,
+          title: readerMode ? 'Exit reader mode' : 'Reader mode',
+          style: iconBtnStyle(readerMode),
+        }, '▤') : null}
         ${h('button', {
           onClick: toggleTheme,
           title: lightMode ? 'Switch to dark mode' : 'Switch to light mode',
@@ -2128,7 +2128,7 @@ function App() {
   const [keyRowOpen,  setKeyRowOpen] = useState(false);       // mobile-only on-screen key row
   const [lightMode,   setLightMode]  = useState(() => localStorage.getItem('panelTheme') === 'light');
   const [readerMode,  setReaderMode] = useState(() => localStorage.getItem('panelReader') === '1');
-  const [readerSize,  setReaderSize] = useState(() => localStorage.getItem('panelReaderSize') || 'm');
+  const [readerSize,  setReaderSize] = useState(() => localStorage.getItem('panelReaderSize') || 's');
   // Which pane reader mode shows full-screen. Lives here (not in PaneGrid) because
   // in reader mode the non-focused panes are display:none and the focused one sits
   // behind a pointer-events:none host, so the tab strip — driven by App's own
