@@ -234,7 +234,7 @@ function NetTicker({ mbps, maxMbps, label, compact }) {
   );
 
   return html`
-    <span style="display:inline-flex;align-items:center;gap:${compact ? '2px' : '4px'};font-size:${compact ? '10px' : 'clamp(11px,1.1vw,15px)'};color:${C.dim}">
+    <span style="display:inline-flex;align-items:center;gap:${compact ? '2px' : '4px'};font-size:${compact ? '8px' : 'clamp(9px,0.95vw,13px)'};color:${C.dim}">
       <span>${label}</span>
       <span style="display:inline-flex;align-items:center">${compact ? dots.slice(0,4) : dots}</span>
       <span style="color:${C.white};min-width:${compact ? '28px' : '38px'};text-align:right">${fmt(mbps, 2)}<span style="color:${C.dim}">${compact ? 'M' : 'MB/s'}</span></span>
@@ -251,7 +251,8 @@ function HeaderBar({ node, lxcs, config, view, setView, paneStates, onTabClick, 
   const vw     = window.innerWidth;
   const narrow = vw < 480;   // phone portrait
   const tiny   = vw < 360;   // very small phone
-  const fs     = narrow ? '11px' : 'clamp(11px,1.15vw,16px)';
+  const fs     = narrow ? '11px' : 'clamp(11px,1.15vw,16px)';   // title-bar size — VT220 elements only
+  const fsBody = narrow ? '9px'  : 'clamp(9px,0.93vw,13px)';    // everything else in this bar (terminal font reads bigger)
 
   // Ref lives on the dashboard bar; after every dashboard render we record its height
   // so the panes bar can match it exactly.
@@ -279,7 +280,7 @@ function HeaderBar({ node, lxcs, config, view, setView, paneStates, onTabClick, 
     border:        `1px solid ${view === 'panes' ? C.amber : C.borderDim}`,
     color:         view === 'panes' ? C.amberHi : C.dim,
     fontFamily:    'inherit',
-    fontSize:      narrow ? '10px' : 'clamp(9px,0.9vw,12px)',
+    fontSize:      narrow ? '8px' : 'clamp(7px,0.75vw,10px)',
     padding:       narrow ? '3px 5px' : '2px 8px',
     cursor:        'pointer',
     letterSpacing: narrow ? 0 : '0.5px',
@@ -318,7 +319,7 @@ function HeaderBar({ node, lxcs, config, view, setView, paneStates, onTabClick, 
         boxSizing:     'border-box',
         borderBottom:  `1px solid ${C.border}`,
         background:    C.panel,
-        fontSize:      fs,
+        fontSize:      fsBody,
         flexWrap:      'nowrap',
         flexShrink:    0,
       },
@@ -408,7 +409,7 @@ function HeaderBar({ node, lxcs, config, view, setView, paneStates, onTabClick, 
           },
             h('span', {
               style: {
-                fontSize: narrow ? '9px' : 'clamp(9px,0.8vw,11px)',
+                fontSize: narrow ? '7px' : 'clamp(7px,0.65vw,9px)',
                 color: C.dim, lineHeight: 1, marginBottom: '2px', flexShrink: 0,
               },
             }, displayId),
@@ -416,7 +417,7 @@ function HeaderBar({ node, lxcs, config, view, setView, paneStates, onTabClick, 
               style: {
                 width: '100%', overflow: 'hidden', textOverflow: 'clip',
                 whiteSpace: 'nowrap', textAlign: 'center',
-                fontSize: narrow ? '10px' : 'clamp(10px,1vw,13px)',
+                fontSize: narrow ? '8px' : 'clamp(8px,0.85vw,11px)',
                 lineHeight: 1, color: nameColor,
               },
             }, displayName),
@@ -424,7 +425,7 @@ function HeaderBar({ node, lxcs, config, view, setView, paneStates, onTabClick, 
               onClick: e => { e.stopPropagation(); onTabClose && onTabClose(lxc.vmid); },
               style: {
                 position: 'absolute', top: '2px', right: '4px',
-                fontSize: narrow ? '13px' : 'clamp(13px,1.3vw,17px)',
+                fontSize: narrow ? '11px' : 'clamp(11px,1.15vw,15px)',
                 color: C.dim, cursor: 'pointer', lineHeight: 1, padding: '1px 2px',
               },
             }, '×') : null,
@@ -472,14 +473,14 @@ function HeaderBar({ node, lxcs, config, view, setView, paneStates, onTabClick, 
       padding:      barPad,
       borderBottom: `1px solid ${C.border}`,
       background:   C.panel,
-      fontSize:     fs,
+      fontSize:     fsBody,
       flexWrap:     'nowrap',
       overflow:     'hidden',
       flexShrink:   0,
       boxSizing:    'border-box',
     },
   },
-    h('span', { style: { color: C.amberHi, fontWeight: 'bold', flexShrink: 0, letterSpacing: narrow ? 0 : '1px', fontFamily: DEFAULT_FONT } },
+    h('span', { style: { color: C.amberHi, fontWeight: 'bold', flexShrink: 0, letterSpacing: narrow ? 0 : '1px', fontFamily: DEFAULT_FONT, fontSize: fs } },
       config ? config.panel_title : 'HOST'),
 
     sep,
@@ -637,7 +638,7 @@ function LxcCell({ lxc, flickerRef, openVmid, setOpenVmid }) {
           pointer-events: none;
         ">
           <span style="
-            font-size: clamp(9px,1.2vw,16px);
+            font-size: clamp(7px,1.05vw,14px);
             color: ${isRunning ? lampColor : C.dimmer};
             opacity: 0.85;
             user-select: none;
@@ -661,14 +662,14 @@ function LxcCell({ lxc, flickerRef, openVmid, setOpenVmid }) {
           <div style="
             position:absolute;top:3px;right:5px;
             color:${C.dim};cursor:pointer;
-            font-size:clamp(8px,0.9vw,12px);
+            font-size:clamp(6px,0.75vw,10px);
             line-height:1;user-select:none;
           ">✕</div>
 
           ${feedback ? html`
             <span style="
               color:${feedback.ok ? C.greenHi : C.red};
-              font-size:clamp(8px,0.9vw,12px);
+              font-size:clamp(6px,0.75vw,10px);
               letter-spacing:1px;
               text-align:center;
             ">${feedback.msg}</span>
@@ -688,7 +689,7 @@ function LxcCell({ lxc, flickerRef, openVmid, setOpenVmid }) {
                     border: `1px solid ${col}`,
                     color: col,
                     fontFamily: 'inherit',
-                    fontSize: 'clamp(6px,0.7vw,9px)',
+                    fontSize: 'clamp(5px,0.62vw,8px)',
                     cursor: pending ? 'default' : 'pointer',
                     letterSpacing: '0.5px',
                     display: 'flex',
@@ -708,7 +709,7 @@ function LxcCell({ lxc, flickerRef, openVmid, setOpenVmid }) {
       <div style="
         padding: clamp(1px,0.3vh,3px) 0;
         text-align: center;
-        font-size: clamp(9px,0.95vw,14px);
+        font-size: clamp(7px,0.8vw,12px);
         letter-spacing: 0.4px;
         color: ${isRunning ? C.white : C.dim};
         background: ${C.bg};
@@ -758,16 +759,16 @@ function GpuRow({ gpu, selected, onSelect }) {
       border-top: 1px solid ${C.borderDim};
       border-left: 3px solid ${selected ? C.blueHi : 'transparent'};
       background: ${selected ? C.blueHi + '14' : 'transparent'};
-      font-size: clamp(11px,1.1vw,15px);
+      font-size: clamp(9px,0.95vw,13px);
       cursor: pointer;
     ">
       <!-- Top row: idx + name OLED + live stats -->
       <div style="display:flex;align-items:center;gap:clamp(6px,0.8vw,12px);margin-bottom:clamp(3px,0.4vh,6px)">
-        <span style="color:${C.dim};font-size:clamp(10px,1vw,13px);flex-shrink:0">${gpu.index}</span>
+        <span style="color:${C.dim};font-size:clamp(8px,0.85vw,11px);flex-shrink:0">${gpu.index}</span>
         <div style="
           background:${C.bg};border:1px solid ${C.borderDim};
           padding:2px clamp(4px,0.5vw,8px);
-          color:${C.purpleHi};font-size:clamp(10px,1.05vw,14px);
+          color:${C.purpleHi};font-size:clamp(8px,0.9vw,12px);
           letter-spacing:1px;flex-shrink:0;white-space:nowrap;
         ">${gpu.display_name}</div>
 
@@ -780,24 +781,24 @@ function GpuRow({ gpu, selected, onSelect }) {
 
       <!-- UTIL bar — full width -->
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:clamp(2px,0.3vh,4px)">
-        <span style="width:${labelW};flex-shrink:0;color:${C.dim};font-size:clamp(10px,1vw,13px)">UTIL</span>
+        <span style="width:${labelW};flex-shrink:0;color:${C.dim};font-size:clamp(8px,0.85vw,11px)">UTIL</span>
         ${h(LedBar, { value: utilPct, fluid: true, height: parseInt(barH) || 8, color: C.tealHi, warn: 0.8, crit: 0.95, segments: 30 })}
-        <span style="width:${valW};flex-shrink:0;text-align:right;color:${C.white};font-size:clamp(10px,1vw,13px)">
+        <span style="width:${valW};flex-shrink:0;text-align:right;color:${C.white};font-size:clamp(8px,0.85vw,11px)">
           ${hasData ? `${gpu.gpu_util}%` : '--'}
         </span>
       </div>
 
       <!-- MEM bar — full width -->
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:clamp(2px,0.3vh,4px)">
-        <span style="width:${labelW};flex-shrink:0;color:${C.dim};font-size:clamp(10px,1vw,13px)">MEM</span>
+        <span style="width:${labelW};flex-shrink:0;color:${C.dim};font-size:clamp(8px,0.85vw,11px)">MEM</span>
         ${h(LedBar, { value: memPct, fluid: true, height: parseInt(barH) || 8, color: C.purpleHi, warn: 0.8, crit: 0.95, segments: 30 })}
-        <span style="width:${valW};flex-shrink:0;text-align:right;color:${C.white};font-size:clamp(10px,1vw,13px)">
+        <span style="width:${valW};flex-shrink:0;text-align:right;color:${C.white};font-size:clamp(8px,0.85vw,11px)">
           ${hasData ? `${gpu.mem_util}%` : '--'}
         </span>
       </div>
 
       <!-- PWR / FAN — compact text line -->
-      <div style="display:flex;align-items:center;gap:6px;font-size:clamp(10px,1vw,13px)">
+      <div style="display:flex;align-items:center;gap:6px;font-size:clamp(8px,0.85vw,11px)">
         <span style="color:${C.dim}">PWR</span>
         <span style="color:${C.tealHi}">${gpu.power_w != null ? fmt(gpu.power_w, 0) : '--'}/${gpu.power_limit != null ? fmt(gpu.power_limit, 0) : '--'}W</span>
         <span style="color:${C.dim};margin-left:auto">FAN</span>
@@ -1092,7 +1093,7 @@ function GpuDetailPanel({ lightMode, selectedIdx }) {
 
       <!-- Time window selector -->
       <div style="display:flex;gap:4px;align-items:center;flex-wrap:nowrap">
-        <span style="color:${C.dim};font-size:clamp(8px,0.8vw,11px);flex-shrink:0">WINDOW</span>
+        <span style="color:${C.dim};font-size:clamp(6px,0.65vw,9px);flex-shrink:0">WINDOW</span>
         ${WINDOWS.map(w => h('button', {
           key: w.seconds,
           onClick: () => setWindowSec(w.seconds),
@@ -1101,7 +1102,7 @@ function GpuDetailPanel({ lightMode, selectedIdx }) {
             border:      `1px solid ${windowSec === w.seconds ? C.blueHi : C.borderDim}`,
             color:       windowSec === w.seconds ? C.blueHi : C.dim,
             fontFamily:  'inherit',
-            fontSize:    'clamp(8px,0.8vw,11px)',
+            fontSize:    'clamp(6px,0.65vw,9px)',
             padding:     '1px 5px',
             cursor:      'pointer',
             letterSpacing: '0.3px',
@@ -1112,7 +1113,7 @@ function GpuDetailPanel({ lightMode, selectedIdx }) {
       <!-- History graph — selected GPU only -->
       ${Object.entries(history).filter(([idx]) => Number(idx) === selectedIdx).map(([idx, gpuData]) => html`
         <div key=${idx} style="border:1px solid ${C.borderDim};flex-shrink:0">
-          <div style="padding:2px 4px;font-size:clamp(8px,0.8vw,11px);color:${C.purpleHi};border-bottom:1px solid ${C.borderDim};background:${C.bg}80;letter-spacing:0.5px">
+          <div style="padding:2px 4px;font-size:clamp(6px,0.65vw,9px);color:${C.purpleHi};border-bottom:1px solid ${C.borderDim};background:${C.bg}80;letter-spacing:0.5px">
             ${gpuData.name || 'GPU ' + idx}
           </div>
           <div style="position:relative">
@@ -1129,7 +1130,7 @@ function GpuDetailPanel({ lightMode, selectedIdx }) {
               style="
                 display:none;position:absolute;pointer-events:none;z-index:10;
                 background:${C.panel}ee;border:1px solid ${C.border};
-                padding:4px 8px;font-size:clamp(8px,0.75vw,10px);
+                padding:4px 8px;font-size:clamp(6px,0.6vw,8px);
                 line-height:1.7;white-space:nowrap;font-family:inherit;
               "
             />
@@ -1150,7 +1151,7 @@ function GpuSection({ gpus, show, lightMode }) {
       <div style="width:30%;min-width:0;border-right:1px solid ${C.borderDim};flex-shrink:0">
         ${gpus && gpus.length > 0
           ? gpus.map(g => h(GpuRow, { key: g.id || g.index, gpu: g, selected: g.index === selectedIdx, onSelect: setSelectedIdx }))
-          : html`<div style="padding:8px;color:${C.dimmer};font-size:clamp(10px,1vw,13px)">NO GPU</div>`
+          : html`<div style="padding:8px;color:${C.dimmer};font-size:clamp(8px,0.85vw,11px)">NO GPU</div>`
         }
       </div>
       <!-- Right 70%: GPU detail panel — history graph for the selected GPU -->
@@ -1168,7 +1169,7 @@ function GpuSection({ gpus, show, lightMode }) {
 // used for DISK, whose "used/total" text is too wide for a single thin line.
 function VBar({ value, centerLabel, centerFraction }) {
   const v = Math.max(0, Math.min(1, value || 0));
-  const labelFs = 'font-size:clamp(7px,0.7vw,10px);color:' + C.white + ';text-shadow:0 0 3px ' + C.bg + ',0 0 3px ' + C.bg + ';white-space:nowrap';
+  const labelFs = 'font-size:clamp(6px,0.6vw,8px);color:' + C.white + ';text-shadow:0 0 3px ' + C.bg + ',0 0 3px ' + C.bg + ';white-space:nowrap';
   return html`
     <div style="position:relative;width:100%;flex:1;min-height:0;background:${C.bg};border:1px solid ${C.borderDim};overflow:hidden">
       <div style="
@@ -1213,8 +1214,8 @@ function LxcStatGroup({ lxc }) {
   const ramFrac  = snap.mem || 0;
   const diskFrac = snap.maxdisk ? (snap.disk || 0) / snap.maxdisk : 0;
 
-  const pctFs   = 'font-size:clamp(8px,0.85vw,11px);color:' + C.white + ';text-align:center;min-height:1.2em';
-  const labelFs = 'font-size:clamp(7px,0.75vw,10px);color:' + C.dim + ';text-align:center;flex:1';
+  const pctFs   = 'font-size:clamp(6px,0.7vw,9px);color:' + C.white + ';text-align:center;min-height:1.2em';
+  const labelFs = 'font-size:clamp(6px,0.63vw,8px);color:' + C.dim + ';text-align:center;flex:1';
 
   return html`
     <div style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:64px;height:100%;min-height:0;gap:2px">
@@ -1239,7 +1240,7 @@ function LxcStatGroup({ lxc }) {
       </div>
       <div style="
         font-family:${TERM_FONT};
-        font-size:clamp(10px,1.05vw,14px);color:${C.white};white-space:nowrap;
+        font-size:clamp(8px,0.9vw,12px);color:${C.white};white-space:nowrap;
         overflow:hidden;text-overflow:ellipsis;max-width:100%;flex-shrink:0;
       ">${lxc.display_name || lxc.name || lxc.vmid}</div>
     </div>
@@ -1266,7 +1267,7 @@ function LxcStatsPanel({ lxcs }) {
 
   if (running.length === 0) {
     return html`
-      <div style="height:100%;min-height:clamp(140px,18vh,220px);display:flex;align-items:center;justify-content:center;color:${C.dimmer};font-size:clamp(10px,1vw,13px);font-family:${TERM_FONT}">
+      <div style="height:100%;min-height:clamp(140px,18vh,220px);display:flex;align-items:center;justify-content:center;color:${C.dimmer};font-size:clamp(8px,0.85vw,11px);font-family:${TERM_FONT}">
         NO RUNNING LXC
       </div>
     `;
@@ -1306,7 +1307,7 @@ function BottomSection({ gpus, lxcs, showGpus, lightMode }) {
     border:        `1px solid ${active ? C.amber : C.borderDim}`,
     color:         active ? C.amberHi : C.dim,
     fontFamily:    'inherit',
-    fontSize:      'clamp(9px,0.9vw,12px)',
+    fontSize:      'clamp(7px,0.75vw,10px)',
     padding:       '2px 10px',
     cursor:        'pointer',
     letterSpacing: '0.5px',
@@ -1367,9 +1368,9 @@ function ConnectionOverlay({ lastUpdate }) {
       z-index:100;
       border:2px solid ${flash ? C.red : C.borderDim};
     ">
-      <div style="color:${C.red};font-size:clamp(14px,2vw,22px);letter-spacing:3px;font-weight:bold">CONNECTION LOST</div>
-      <div style="color:${C.dim};font-size:clamp(11px,1.2vw,16px);margin-top:8px">last update: ${timeSince(lastUpdate)} ago</div>
-      <div style="color:${C.dim};font-size:clamp(11px,1.2vw,16px);margin-top:4px">retrying...</div>
+      <div style="color:${C.red};font-size:clamp(12px,1.75vw,20px);letter-spacing:3px;font-weight:bold">CONNECTION LOST</div>
+      <div style="color:${C.dim};font-size:clamp(9px,1.05vw,14px);margin-top:8px">last update: ${timeSince(lastUpdate)} ago</div>
+      <div style="color:${C.dim};font-size:clamp(9px,1.05vw,14px);margin-top:4px">retrying...</div>
     </div>
   `;
 }
@@ -1386,7 +1387,7 @@ function Footer({ config, lightMode, setLightMode }) {
     <div style="
       padding: clamp(5px,0.7vh,10px) clamp(6px,0.8vw,12px);
       border-top:1px solid ${C.borderDim};
-      font-size:clamp(9px,0.95vw,13px);
+      font-size:clamp(7px,0.8vw,11px);
       color:${C.dimmer};
       display:flex;justify-content:space-between;align-items:center;
       flex-shrink:0;
@@ -1401,7 +1402,7 @@ function Footer({ config, lightMode, setLightMode }) {
             border:        `1px solid ${lightMode ? C.amber : C.borderDim}`,
             color:         lightMode ? C.amberHi : C.dim,
             fontFamily:    'inherit',
-            fontSize:      'clamp(9px,0.9vw,12px)',
+            fontSize:      'clamp(7px,0.75vw,10px)',
             padding:       '2px 6px',
             cursor:        'pointer',
             lineHeight:    1,
@@ -1580,7 +1581,7 @@ function MobileKeyRow({ onClose }) {
     color:         C.amberHi,
     fontFamily:    'inherit',
     fontWeight:    'bold',
-    fontSize:      '15px',
+    fontSize:      '13px',
     cursor:        'pointer',
     touchAction:   'manipulation',
     webkitUserSelect: 'none',
