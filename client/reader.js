@@ -298,7 +298,7 @@ export function extractReaderLines(term, maxLines) {
 
   return logical.map((segs, i) => ({
     key: i,
-    sig: segs.map(s => s.key + ' ' + s.text).join(''),
+    sig: segs.map(s => s.key + ' ' + s.text).join(''),
     segs,
   }));
 }
@@ -330,13 +330,19 @@ export function ReaderView({ term, size, theme, lightMode }) {
   const lastRunRef  = useRef(0);
   const rafRef      = useRef(null);
   const timerRef    = useRef(null);
+  const maxLinesRef = useRef(INITIAL_MAX_LINES);
   const [lines, setLines]       = useState([]);
   const [maxLines, setMaxLines] = useState(INITIAL_MAX_LINES);
+  maxLinesRef.current = maxLines;
 
+  // Reads maxLinesRef rather than closing over `maxLines` so growing the
+  // window (see onScroll below) doesn't change this callback's identity —
+  // that would otherwise tear down and re-subscribe the live listeners below
+  // on every growth step.
   const reExtract = useCallback(() => {
     if (!term) return;
-    setLines(extractReaderLines(term, maxLines));
-  }, [term, maxLines]);
+    setLines(extractReaderLines(term, maxLinesRef.current));
+  }, [term]);
 
   // Subscribe to live buffer changes. Both views stay mounted in panel.js and
   // ConsolePane only renders ReaderView when readerMode is true (itself gated
@@ -356,6 +362,7 @@ export function ReaderView({ term, size, theme, lightMode }) {
         if (elapsed < RAF_MIN_INTERVAL_MS) {
           clearTimeout(timerRef.current);
           timerRef.current = setTimeout(() => {
+            timerRef.current = null;
             lastRunRef.current = performance.now();
             reExtract();
           }, RAF_MIN_INTERVAL_MS - elapsed);
@@ -373,8 +380,13 @@ export function ReaderView({ term, size, theme, lightMode }) {
 
     return () => {
       disposables.forEach(d => { try { d.dispose(); } catch {} });
+      // Null out, don't just cancel — these refs persist across effect runs,
+      // and a stale non-null id would make every future schedule() bail via
+      // its `if (rafRef.current) return` guard, freezing the reader for good.
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
       clearTimeout(timerRef.current);
+      timerRef.current = null;
     };
   }, [term, reExtract]);
 
@@ -388,7 +400,12 @@ export function ReaderView({ term, size, theme, lightMode }) {
   function onScroll(e) {
     const el = e.currentTarget;
     pinnedRef.current = (el.scrollHeight - el.scrollTop - el.clientHeight) <= 40;
-    if (el.scrollTop < 200 && maxLines < MAX_LINES_CAP) {
+    // Gated on actual remaining history, not just scroll position — on a
+    // short buffer (the common case right after activation) scrollTop < 200
+    // is true on nearly every scroll event, including the one the pin-to-
+    // bottom effect itself generates, which would otherwise ratchet maxLines
+    // straight to the cap and thrash the live-subscription effect above.
+    if (el.scrollTop < 200 && maxLines < MAX_LINES_CAP && term && term.buffer.active.length > maxLines) {
       setMaxLines(m => Math.min(MAX_LINES_CAP, m + MAX_LINES_STEP));
     }
   }
