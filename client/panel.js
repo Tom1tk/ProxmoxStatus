@@ -1982,7 +1982,14 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
     applyGeometryRef.current?.();
   }, []);
   const handleReaderTap = useCallback(() => {
-    termRef.current?.textarea?.focus();
+    // Reader activation (line ~1972) already focuses the textarea, so a tap
+    // often lands on an already-focused element — iOS Safari only raises the
+    // soft keyboard on a focus *transition*, not on re-focusing the same
+    // element. Force the transition with an explicit blur first.
+    const ta = termRef.current?.textarea;
+    if (!ta) return;
+    ta.blur();
+    ta.focus();
   }, []);
 
   const termBg = lightMode ? LIGHT_TERM_THEME.background : DARK_TERM_THEME.background;
