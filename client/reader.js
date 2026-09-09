@@ -543,11 +543,19 @@ export function ReaderView({ term, size, theme, lightMode, onGeometry, onTap }) 
   // Focusing on pointerdown would fire at the start of every scroll drag —
   // on iOS that cancels the gesture and opens the soft keyboard mid-scroll.
   // Only treat it as a tap if the pointer barely moved before lifting.
+  //
+  // onTap fires from BOTH pointerup and click, deliberately not one or the
+  // other: iOS Safari doesn't reliably treat a .focus() call inside a
+  // pointerup handler as tied to a trusted user gesture, so the keyboard can
+  // fail to raise there even though the element genuinely receives focus —
+  // but click isn't a safe sole replacement either, since it's suppressed on
+  // iOS while the container still has residual scroll momentum. Calling
+  // focus() on an already-focused textarea is a harmless no-op in every
+  // browser, so letting both fire just means one of them backs up the other.
   const pointerStartRef = useRef(null);
   function onPointerDown(e) { pointerStartRef.current = { x: e.clientX, y: e.clientY }; }
-  function onPointerUp(e) {
+  function tryTap(e) {
     const start = pointerStartRef.current;
-    pointerStartRef.current = null;
     if (!start || !onTap) return;
     if (Math.hypot(e.clientX - start.x, e.clientY - start.y) < 10) onTap();
   }
@@ -556,7 +564,8 @@ export function ReaderView({ term, size, theme, lightMode, onGeometry, onTap }) 
     ref: scrollRef,
     onScroll,
     onPointerDown,
-    onPointerUp,
+    onPointerUp: tryTap,
+    onClick: tryTap,
     style: {
       position: 'absolute', inset: 0,
       background: theme.background,
@@ -567,6 +576,13 @@ export function ReaderView({ term, size, theme, lightMode, onGeometry, onTap }) 
       padding: '12px 16px',
       overflowY: 'auto',
       overflowX: 'auto',
+      // pan-y only: nothing is ever meant to overflow horizontally post-trim
+      // (extractReaderLines strips trailing blank padding), so native touch
+      // panning shouldn't offer a horizontal drag at all. overflowX stays
+      // 'auto' rather than 'hidden' for the rare residual case (wide CJK/
+      // emoji/nerd-font glyphs whose advance differs from the measured cell)
+      // — still reachable by mouse wheel / trackpad, just not touch-pannable.
+      touchAction: 'pan-y',
       whiteSpace: 'pre',
     },
   }, term
