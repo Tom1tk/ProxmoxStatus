@@ -1661,6 +1661,15 @@ function ConsolePane({ vmid, visible, lightMode, readerMode }) {
   const lightModeRef  = useRef(lightMode); // kept current so the async creation closure uses latest value
   const roRef          = useRef(null);  // ResizeObserver (torn down in the outer cleanup, see below)
   const touchCleanupRef = useRef(null); // removes the 4 capture-phase touch listeners
+  // Single owner of PTY geometry (see reader-mode plan §4). geomRef holds the
+  // current target — mode:'fit' (pane-driven, the historical behavior) or
+  // mode:'reader' with explicit cols/rows computed from the reader's width.
+  // applyGeometryRef holds the function that acts on it; every call site that
+  // used to call fit.fit() directly now calls applyGeometryRef.current()
+  // instead, so reader geometry can never be silently reverted by the
+  // ResizeObserver, a reconnect, or the un-minimise effect running on its own.
+  const geomRef          = useRef({ mode: 'fit', cols: null, rows: null });
+  const applyGeometryRef = useRef(null);
   // True once term.open() has run. The Terminal is created inside an async IIFE
   // (below) that awaits the xterm CDN import, so termRef.current is null for a
   // beat after mount - anything that needs to touch the live terminal (like
@@ -1703,24 +1712,35 @@ function ConsolePane({ vmid, visible, lightMode, readerMode }) {
       fitRef.current  = fit;
       setTermReady(true);
 
-      // Re-fit whenever the host is resized (handles pane grid re-tiling). Always
-      // push the new size explicitly — onResize won't fire if cols/rows are
-      // unchanged, but after reconnect the PTY may have drifted from the
-      // terminal's current size. Skipped on a zero-size host (e.g. a minimised
-      // pane still mounted at width/height 0) since FitAddon computes garbage
-      // cols/rows from an empty box.
-      const ro = new ResizeObserver(() => {
-        if (destroyed || !fitRef.current) return;
+      // The single place PTY geometry gets applied from. mode:'fit' reproduces
+      // the historical behavior (fit to the pane, explicitly re-send cols/rows
+      // since onResize only fires when they change but the PTY may have drifted
+      // after a reconnect). mode:'reader' (set by reader mode before calling)
+      // resizes to its own computed cols/rows instead; term.onResize already
+      // sends 1:cols:rows: whenever resize() actually changes the dimensions,
+      // so there's nothing further to push in that branch.
+      const applyGeometry = () => {
+        if (destroyed || !fitRef.current || !termRef.current) return;
         const host = xtermHostRef.current;
         if (!host || host.clientWidth === 0 || host.clientHeight === 0) return;
+        const t = termRef.current;
         try {
-          fitRef.current.fit();
-          const ws = wsRef.current;
-          if (readyRef.current && ws?.readyState === WebSocket.OPEN) {
-            ws.send(`1:${term.cols}:${term.rows}:`);
+          const geom = geomRef.current;
+          if (geom.mode === 'reader' && geom.cols && geom.rows) {
+            t.resize(geom.cols, geom.rows);
+          } else {
+            fitRef.current.fit();
+            const ws = wsRef.current;
+            if (readyRef.current && ws?.readyState === WebSocket.OPEN) {
+              ws.send(`1:${t.cols}:${t.rows}:`);
+            }
           }
         } catch {}
-      });
+      };
+      applyGeometryRef.current = applyGeometry;
+
+      // Re-apply whenever the host is resized (handles pane grid re-tiling).
+      const ro = new ResizeObserver(() => applyGeometryRef.current?.());
       ro.observe(xtermHostRef.current);
       roRef.current = ro;
 
@@ -1836,12 +1856,12 @@ function ConsolePane({ vmid, visible, lightMode, readerMode }) {
               attempt = 0;
               if (data.length > 2) term.write(data.slice(2));
               if (reconnected) term.writeln('\r\n\x1b[32m[reconnected]\x1b[0m');
-              // Double-RAF: wait for pane layout to settle, then fit and push size.
-              // We always send 1:cols:rows: explicitly — onResize won't fire if the
-              // terminal was already fit to these dimensions during setup.
+              // Double-RAF: wait for pane layout to settle, then apply geometry.
+              // Routed through applyGeometryRef (rather than fit.fit() directly)
+              // so a reconnect while reader mode is active re-applies reader
+              // geometry instead of reverting to pane-fit geometry.
               requestAnimationFrame(() => requestAnimationFrame(() => {
-                fit.fit();
-                ws.send(`1:${term.cols}:${term.rows}:`);
+                applyGeometryRef.current?.();
                 if (!reconnected) term.focus();
               }));
             }
@@ -1887,6 +1907,7 @@ function ConsolePane({ vmid, visible, lightMode, readerMode }) {
       try { touchCleanupRef.current?.(); } catch {}
       roRef.current = null;
       touchCleanupRef.current = null;
+      applyGeometryRef.current = null;
       termRef.current?.dispose();
       termRef.current = null;
       fitRef.current  = null;
@@ -1896,19 +1917,12 @@ function ConsolePane({ vmid, visible, lightMode, readerMode }) {
     };
   }, [vmid]);
 
-  // Fit and re-send terminal size when pane becomes visible after being minimised.
+  // Re-apply geometry when pane becomes visible after being minimised.
   // onResize alone is not enough — if grid dimensions are unchanged the event won't fire.
   useEffect(() => {
     if (!visible || !fitRef.current) return;
     requestAnimationFrame(() => {
-      const host = xtermHostRef.current;
-      if (!host || host.clientWidth === 0 || host.clientHeight === 0) return;
-      try {
-        fitRef.current.fit();
-        if (readyRef.current && wsRef.current?.readyState === WebSocket.OPEN && termRef.current) {
-          wsRef.current.send(`1:${termRef.current.cols}:${termRef.current.rows}:`);
-        }
-      } catch {}
+      applyGeometryRef.current?.();
     });
   }, [visible]);
 
