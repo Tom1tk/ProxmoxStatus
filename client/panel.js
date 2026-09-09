@@ -1952,6 +1952,39 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
     });
   }, [visible]);
 
+  // ReaderView drives geomRef itself (via onGeometry below) while it's
+  // mounted, but nothing reverts it when reader mode turns off — without
+  // this the PTY would stay at reader width/height after switching back to
+  // the tiled grid.
+  useEffect(() => {
+    if (readerMode) return;
+    if (geomRef.current.mode === 'reader') {
+      geomRef.current = { mode: 'fit', cols: null, rows: null };
+      applyGeometryRef.current?.();
+    }
+  }, [readerMode]);
+
+  // Tapping into a just-focused reader pane (or ReaderView activating on an
+  // already-connected pane) should retarget input the same way clicking the
+  // live terminal does — otherwise _activeTerm.send still points at whatever
+  // pane was focused before and MobileKeyRow types into an invisible one.
+  useEffect(() => {
+    if (readerMode && termReady) termRef.current?.textarea?.focus();
+  }, [readerMode, termReady]);
+
+  // Stable identities: ReaderView's recomputeGeometry/ResizeObserver effect
+  // deps include these callbacks. An inline lambda here would get a fresh
+  // identity on every ConsolePane render (every poll tick, theme toggle,
+  // etc.), forcing that effect to tear down and re-fire unconditionally on
+  // every unrelated re-render — a self-sustaining resize/extract loop.
+  const handleReaderGeometry = useCallback((cols, rows) => {
+    geomRef.current = { mode: 'reader', cols, rows };
+    applyGeometryRef.current?.();
+  }, []);
+  const handleReaderTap = useCallback(() => {
+    termRef.current?.textarea?.focus();
+  }, []);
+
   const termBg = lightMode ? LIGHT_TERM_THEME.background : DARK_TERM_THEME.background;
 
   // containerRef is the layout box PaneGrid positions/sizes; xtermHostRef is the
@@ -1976,6 +2009,8 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
       size:  readerSize,
       theme: lightMode ? LIGHT_TERM_THEME : DARK_TERM_THEME,
       lightMode,
+      onGeometry: handleReaderGeometry,
+      onTap: handleReaderTap,
     }) : null,
   );
 }

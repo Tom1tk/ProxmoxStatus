@@ -321,10 +321,19 @@ class ReaderLine extends Component {
   }
 }
 
+// Font family constant, shared between the reader's own text and the hidden
+// measuring span geometry uses — must match exactly or measured char width
+// won't correspond to what's actually rendered.
+const READER_FONT_FAMILY = "'JetBrains Mono', 'Courier New', monospace";
+
 // Live, colour-preserving re-projection of `term`'s buffer. Props:
 // `term` (live xterm Terminal instance, null until termReady), `size`
-// ('s'|'m'|'l'), `theme` (DARK_TERM_THEME or LIGHT_TERM_THEME), `lightMode`.
-export function ReaderView({ term, size, theme, lightMode }) {
+// ('s'|'m'|'l'), `theme` (DARK_TERM_THEME or LIGHT_TERM_THEME), `lightMode`,
+// `onGeometry(cols, rows)` (PTY auto-fit target, called whenever the
+// available area or font size changes width-wise — see the geometry effect
+// below), `onTap()` (fires on a tap/click that wasn't a scroll drag, so the
+// caller can focus the underlying terminal's textarea for input).
+export function ReaderView({ term, size, theme, lightMode, onGeometry, onTap }) {
   const scrollRef   = useRef(null);
   const pinnedRef   = useRef(true); // follow the tail unless the user scrolled up
   const lastRunRef  = useRef(0);
@@ -410,16 +419,104 @@ export function ReaderView({ term, size, theme, lightMode }) {
     }
   }
 
+  // ─── PTY auto-fit ─────────────────────────────────────────────────────────
+  // A persistent off-screen span, sized to the current reader font, used to
+  // measure real character advance rather than assuming a fixed cell width —
+  // nerd-font ligatures and fallback fonts can differ from JetBrains Mono's
+  // own metrics.
+  const measureSpanRef = useRef(null);
+  useEffect(() => {
+    const span = document.createElement('span');
+    span.style.cssText =
+      `position:fixed; left:-99999px; top:0; visibility:hidden; white-space:pre; font-family:${READER_FONT_FAMILY};`;
+    span.textContent = 'M'.repeat(100);
+    document.body.appendChild(span);
+    measureSpanRef.current = span;
+    return () => { span.remove(); measureSpanRef.current = null; };
+  }, []);
+
   const cfg = READER_SIZES[size] || READER_SIZES.m;
+
+  // Read through a ref rather than closed over directly: an inline lambda
+  // prop (which is what ConsolePane's onGeometry/onTap were before being
+  // stabilized there) would otherwise change identity on every parent
+  // re-render, cascading into recomputeGeometry -> the ResizeObserver effect
+  // below -> a forced re-measure/resize on every unrelated render.
+  const onGeometryRef = useRef(onGeometry);
+  onGeometryRef.current = onGeometry;
+
+  const recomputeGeometry = useCallback(async () => {
+    const el = scrollRef.current;
+    const span = measureSpanRef.current;
+    if (!el || !span || !onGeometryRef.current) return;
+    if (el.clientWidth === 0 || el.clientHeight === 0) return; // hidden/collapsed pane
+    // injectTermFont() loads the Google Fonts link asynchronously; measuring
+    // before it lands gives fallback-font metrics and pushes bogus geometry
+    // to a live PTY on the first activation after a cold page load.
+    try { await document.fonts.load(`${cfg.fontSize}px 'JetBrains Mono'`); } catch {}
+    if (!measureSpanRef.current) return; // unmounted while awaiting the font
+    // Re-check after the await: the pane may have been hidden/torn down
+    // while the font load was in flight, which would otherwise measure zero
+    // and push a bogus small geometry (e.g. 20x10) to a live PTY.
+    if (el.clientWidth === 0 || el.clientHeight === 0) return;
+    span.style.fontSize = cfg.fontSize + 'px';
+    const charW = span.getBoundingClientRect().width / 100;
+    if (!charW) return;
+    const style = getComputedStyle(el);
+    const availW = el.clientWidth  - (parseFloat(style.paddingLeft) || 0) - (parseFloat(style.paddingRight)  || 0);
+    const availH = el.clientHeight - (parseFloat(style.paddingTop)  || 0) - (parseFloat(style.paddingBottom) || 0);
+    const cols = Math.max(20, Math.floor(availW / charW));
+    const rows = Math.max(10, Math.min(60, Math.floor(availH / (cfg.fontSize * cfg.lineHeight))));
+    onGeometryRef.current(cols, rows);
+  }, [cfg.fontSize, cfg.lineHeight]);
+
+  // Reader width drives the PTY's column count so the remote app wraps its
+  // own output to fit (see the plan's "key design consequence"). Deliberately
+  // width-gated, not a plain ResizeObserver callback: height alone changes
+  // constantly on mobile as the URL bar and soft keyboard show/hide, and
+  // resizing the PTY on every one of those would reflow the running app each
+  // time the keyboard opens. A live width change (rotation, pane re-tiling,
+  // S/M/L font size) still recomputes both cols and rows together, since
+  // term.resize() needs both anyway.
+  const lastWidthRef = useRef(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !term) return;
+    lastWidthRef.current = null; // force one recompute on (re)activation
+    recomputeGeometry();
+    const ro = new ResizeObserver(entries => {
+      const w = Math.round(entries[0].contentRect.width);
+      if (w === lastWidthRef.current) return;
+      lastWidthRef.current = w;
+      recomputeGeometry();
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [term, recomputeGeometry]);
+
+  // ─── Tap to type ────────────────────────────────────────────────────────
+  // Focusing on pointerdown would fire at the start of every scroll drag —
+  // on iOS that cancels the gesture and opens the soft keyboard mid-scroll.
+  // Only treat it as a tap if the pointer barely moved before lifting.
+  const pointerStartRef = useRef(null);
+  function onPointerDown(e) { pointerStartRef.current = { x: e.clientX, y: e.clientY }; }
+  function onPointerUp(e) {
+    const start = pointerStartRef.current;
+    pointerStartRef.current = null;
+    if (!start || !onTap) return;
+    if (Math.hypot(e.clientX - start.x, e.clientY - start.y) < 10) onTap();
+  }
 
   return h('div', {
     ref: scrollRef,
     onScroll,
+    onPointerDown,
+    onPointerUp,
     style: {
       position: 'absolute', inset: 0,
       background: theme.background,
       color: theme.foreground,
-      fontFamily: "'JetBrains Mono', 'Courier New', monospace",
+      fontFamily: READER_FONT_FAMILY,
       fontSize: cfg.fontSize + 'px',
       lineHeight: String(cfg.lineHeight),
       padding: '12px 16px',
