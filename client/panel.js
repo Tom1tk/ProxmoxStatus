@@ -1655,6 +1655,8 @@ function ConsolePane({ vmid, visible, lightMode }) {
   const sendStrRef    = useRef(null);  // current terminal's send function (for _activeTerm cleanup)
   const focusHandlerRef = useRef(null); // textarea 'focus' listener (for _activeTerm cleanup)
   const lightModeRef  = useRef(lightMode); // kept current so the async creation closure uses latest value
+  const roRef          = useRef(null);  // ResizeObserver (torn down in the outer cleanup, see below)
+  const touchCleanupRef = useRef(null); // removes the 4 capture-phase touch listeners
 
   useEffect(() => { lightModeRef.current = lightMode; }, [lightMode]);
 
@@ -1705,6 +1707,7 @@ function ConsolePane({ vmid, visible, lightMode }) {
         } catch {}
       });
       ro.observe(containerRef.current);
+      roRef.current = ro;
 
       // Touch scrolling: xterm.js only scrolls on real 'wheel' events, and only
       // when the buffer has scrollback (i.e. NOT the alternate screen full-screen
@@ -1747,6 +1750,12 @@ function ConsolePane({ vmid, visible, lightMode }) {
       touchTarget.addEventListener('touchmove', onTouchMove, { passive: false, capture: true });
       touchTarget.addEventListener('touchend', onTouchEnd, { passive: true, capture: true });
       touchTarget.addEventListener('touchcancel', onTouchEnd, { passive: true, capture: true });
+      touchCleanupRef.current = () => {
+        touchTarget.removeEventListener('touchstart', onTouchStart, { capture: true });
+        touchTarget.removeEventListener('touchmove', onTouchMove, { capture: true });
+        touchTarget.removeEventListener('touchend', onTouchEnd, { capture: true });
+        touchTarget.removeEventListener('touchcancel', onTouchEnd, { capture: true });
+      };
 
       // Proxmox input protocol: "0:" + UTF-8 byte length + ":" + data
       // Register this terminal as active on every keystroke so the tmux prefix
@@ -1846,14 +1855,10 @@ function ConsolePane({ vmid, visible, lightMode }) {
       }
 
       connect();
-
-      return () => {
-        ro.disconnect();
-        touchTarget.removeEventListener('touchstart', onTouchStart, { capture: true });
-        touchTarget.removeEventListener('touchmove', onTouchMove, { capture: true });
-        touchTarget.removeEventListener('touchend', onTouchEnd, { capture: true });
-        touchTarget.removeEventListener('touchcancel', onTouchEnd, { capture: true });
-      };
+      // Note: this async IIFE's own return value is just the resolved promise,
+      // NOT an effect cleanup — Preact never sees it. All teardown for what's
+      // set up in here (ro, touch listeners) happens via the refs below, in the
+      // effect's real cleanup function.
     })();
 
     return () => {
@@ -1863,6 +1868,10 @@ function ConsolePane({ vmid, visible, lightMode }) {
       clearTimeout(reconnectRef.current);
       wsRef.current?.close();
       if (focusHandlerRef.current) termRef.current?.textarea?.removeEventListener('focus', focusHandlerRef.current);
+      try { roRef.current?.disconnect(); } catch {}
+      try { touchCleanupRef.current?.(); } catch {}
+      roRef.current = null;
+      touchCleanupRef.current = null;
       termRef.current?.dispose();
       termRef.current = null;
       fitRef.current  = null;
