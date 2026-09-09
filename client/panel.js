@@ -1376,7 +1376,10 @@ function ConnectionOverlay({ lastUpdate }) {
 }
 
 // ─── Footer ──────────────────────────────────────────────────────────────────
-function Footer({ config, lightMode, setLightMode }) {
+function Footer({ config, node, lightMode, setLightMode }) {
+  const subtitle = node && node.pve_version
+    ? `PROXMOX ${node.pve_version}`
+    : (config ? config.panel_subtitle : 'PROXMOX');
   function toggleTheme() {
     const next = !lightMode;
     localStorage.setItem('panelTheme', next ? 'light' : 'dark');
@@ -1409,7 +1412,7 @@ function Footer({ config, lightMode, setLightMode }) {
             letterSpacing: '0.5px',
           },
         }, lightMode ? '☾' : '☀')}
-        <span>${config ? config.panel_subtitle : 'PROXMOX'}</span>
+        <span>${subtitle}</span>
       </span>
     </div>
   `;
@@ -2139,7 +2142,7 @@ function App() {
           </div>
         </div>
 
-        ${h(Footer, { config, lightMode, setLightMode })}
+        ${h(Footer, { config, node: status ? status.node : null, lightMode, setLightMode })}
       </div>
       ${view === 'panes' && narrow && keyRowOpen
         ? h(MobileKeyRow, { onClose: () => setKeyRowOpen(false) })
