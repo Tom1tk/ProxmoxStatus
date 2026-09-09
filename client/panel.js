@@ -1644,8 +1644,12 @@ function warmXterm() {
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS  = 15000;
 
-function ConsolePane({ vmid, visible, lightMode }) {
-  const containerRef  = useRef(null);
+function ConsolePane({ vmid, visible, lightMode, readerMode }) {
+  const containerRef  = useRef(null); // outer layout box (sized by PaneGrid)
+  const xtermHostRef  = useRef(null); // inner absolute-fill box xterm actually renders into;
+                                       // split from containerRef so reader mode can hide just
+                                       // this layer (opacity:0, never display:none/visibility:hidden -
+                                       // see reader-mode plan §6 for why) while ReaderView overlays it
   const termRef       = useRef(null);
   const fitRef        = useRef(null);
   const wsRef         = useRef(null);
@@ -1657,6 +1661,11 @@ function ConsolePane({ vmid, visible, lightMode }) {
   const lightModeRef  = useRef(lightMode); // kept current so the async creation closure uses latest value
   const roRef          = useRef(null);  // ResizeObserver (torn down in the outer cleanup, see below)
   const touchCleanupRef = useRef(null); // removes the 4 capture-phase touch listeners
+  // True once term.open() has run. The Terminal is created inside an async IIFE
+  // (below) that awaits the xterm CDN import, so termRef.current is null for a
+  // beat after mount - anything that needs to touch the live terminal (like
+  // ReaderView) must wait for this rather than firing once on mount.
+  const [termReady, setTermReady] = useState(false);
 
   useEffect(() => { lightModeRef.current = lightMode; }, [lightMode]);
 
@@ -1676,7 +1685,7 @@ function ConsolePane({ vmid, visible, lightMode }) {
 
     (async () => {
       const [{ Terminal }, { FitAddon }] = await warmXterm();
-      if (destroyed || !containerRef.current) return;
+      if (destroyed || !xtermHostRef.current) return;
 
       const term = new Terminal({
         theme:       lightModeRef.current ? LIGHT_TERM_THEME : DARK_TERM_THEME,
@@ -1688,16 +1697,22 @@ function ConsolePane({ vmid, visible, lightMode }) {
 
       const fit = new FitAddon();
       term.loadAddon(fit);
-      term.open(containerRef.current);
+      term.open(xtermHostRef.current);
 
       termRef.current = term;
       fitRef.current  = fit;
+      setTermReady(true);
 
-      // Re-fit whenever the container is resized (handles pane grid re-tiling).
-      // Always push the new size explicitly — onResize only fires when cols/rows change,
-      // but after reconnect the PTY may have drifted from the terminal's current size.
+      // Re-fit whenever the host is resized (handles pane grid re-tiling). Always
+      // push the new size explicitly — onResize won't fire if cols/rows are
+      // unchanged, but after reconnect the PTY may have drifted from the
+      // terminal's current size. Skipped on a zero-size host (e.g. a minimised
+      // pane still mounted at width/height 0) since FitAddon computes garbage
+      // cols/rows from an empty box.
       const ro = new ResizeObserver(() => {
         if (destroyed || !fitRef.current) return;
+        const host = xtermHostRef.current;
+        if (!host || host.clientWidth === 0 || host.clientHeight === 0) return;
         try {
           fitRef.current.fit();
           const ws = wsRef.current;
@@ -1706,7 +1721,7 @@ function ConsolePane({ vmid, visible, lightMode }) {
           }
         } catch {}
       });
-      ro.observe(containerRef.current);
+      ro.observe(xtermHostRef.current);
       roRef.current = ro;
 
       // Touch scrolling: xterm.js only scrolls on real 'wheel' events, and only
@@ -1745,7 +1760,7 @@ function ConsolePane({ vmid, visible, lightMode }) {
         }));
       };
       const onTouchEnd = e => { touchY = null; e.stopPropagation(); };
-      const touchTarget = containerRef.current;
+      const touchTarget = xtermHostRef.current;
       touchTarget.addEventListener('touchstart', onTouchStart, { passive: true, capture: true });
       touchTarget.addEventListener('touchmove', onTouchMove, { passive: false, capture: true });
       touchTarget.addEventListener('touchend', onTouchEnd, { passive: true, capture: true });
@@ -1877,6 +1892,7 @@ function ConsolePane({ vmid, visible, lightMode }) {
       fitRef.current  = null;
       wsRef.current   = null;
       readyRef.current = false;
+      setTermReady(false);
     };
   }, [vmid]);
 
@@ -1885,6 +1901,8 @@ function ConsolePane({ vmid, visible, lightMode }) {
   useEffect(() => {
     if (!visible || !fitRef.current) return;
     requestAnimationFrame(() => {
+      const host = xtermHostRef.current;
+      if (!host || host.clientWidth === 0 || host.clientHeight === 0) return;
       try {
         fitRef.current.fit();
         if (readyRef.current && wsRef.current?.readyState === WebSocket.OPEN && termRef.current) {
@@ -1894,13 +1912,26 @@ function ConsolePane({ vmid, visible, lightMode }) {
     });
   }, [visible]);
 
+  const termBg = lightMode ? LIGHT_TERM_THEME.background : DARK_TERM_THEME.background;
+
+  // containerRef is the layout box PaneGrid positions/sizes; xtermHostRef is the
+  // actual xterm render target, absolutely filling it. Reader mode hides the host
+  // with opacity:0 (NOT visibility:hidden - that would make it unfocusable and
+  // break tap-to-type; NOT display:none - that collapses it to 0x0 and FitAddon
+  // would then compute garbage cols/rows) and overlays ReaderView on top instead.
   return h('div', {
     ref:   containerRef,
-    style: {
-      width: '100%', height: '100%', overflow: 'hidden',
-      background: lightMode ? LIGHT_TERM_THEME.background : DARK_TERM_THEME.background,
-    },
-  });
+    style: { width: '100%', height: '100%', position: 'relative', overflow: 'hidden', background: termBg },
+  },
+    h('div', {
+      ref:   xtermHostRef,
+      style: {
+        position: 'absolute', inset: 0, background: termBg,
+        opacity:       readerMode ? 0    : 1,
+        pointerEvents: readerMode ? 'none' : 'auto',
+      },
+    }),
+  );
 }
 
 // ─── PaneGrid ─────────────────────────────────────────────────────────────────
