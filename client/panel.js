@@ -1,6 +1,7 @@
 import { h, render } from 'https://esm.sh/preact@10';
 import { useState, useEffect, useRef, useCallback } from 'https://esm.sh/preact@10/hooks';
 import htm from 'https://esm.sh/htm@3';
+import { ReaderView, READER_SIZES } from './reader.js';
 
 const html = htm.bind(h);
 
@@ -95,7 +96,8 @@ function injectTermFont() {
   _termFontInjected = true;
   const link = document.createElement('link');
   link.rel  = 'stylesheet';
-  link.href = 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap';
+  // 700 (bold) is for reader mode — regular xterm rendering never requests it.
+  link.href = 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap';
   document.head.appendChild(link);
 }
 // TERM_FONT is now the page-wide default (see style.css), so load it immediately
@@ -1376,7 +1378,9 @@ function ConnectionOverlay({ lastUpdate }) {
 }
 
 // ─── Footer ──────────────────────────────────────────────────────────────────
-function Footer({ config, node, lightMode, setLightMode }) {
+const READER_SIZE_ORDER = ['s', 'm', 'l'];
+
+function Footer({ config, node, lightMode, setLightMode, view, readerMode, setReaderMode, readerSize, setReaderSize }) {
   const subtitle = node && node.pve_version
     ? `PROXMOX ${node.pve_version}`
     : (config ? config.panel_subtitle : 'PROXMOX');
@@ -1385,6 +1389,28 @@ function Footer({ config, node, lightMode, setLightMode }) {
     localStorage.setItem('panelTheme', next ? 'light' : 'dark');
     setLightMode(next);
   }
+  function toggleReader() {
+    const next = !readerMode;
+    localStorage.setItem('panelReader', next ? '1' : '0');
+    setReaderMode(next);
+  }
+  function cycleReaderSize() {
+    const i = READER_SIZE_ORDER.indexOf(readerSize);
+    const next = READER_SIZE_ORDER[(i + 1) % READER_SIZE_ORDER.length];
+    localStorage.setItem('panelReaderSize', next);
+    setReaderSize(next);
+  }
+  const iconBtnStyle = active => ({
+    background:    active ? C.amber + '20' : 'transparent',
+    border:        `1px solid ${active ? C.amber : C.borderDim}`,
+    color:         active ? C.amberHi : C.dim,
+    fontFamily:    'inherit',
+    fontSize:      'clamp(7px,0.75vw,10px)',
+    padding:       '2px 6px',
+    cursor:        'pointer',
+    lineHeight:    1,
+    letterSpacing: '0.5px',
+  });
 
   return html`
     <div style="
@@ -1397,20 +1423,20 @@ function Footer({ config, node, lightMode, setLightMode }) {
     ">
       <span>PROXMOX STATUS PANEL</span>
       <span style="display:flex;align-items:center;gap:clamp(6px,0.8vw,10px)">
+        ${view === 'panes' ? h('button', {
+          onClick: toggleReader,
+          title: readerMode ? 'Exit reader mode' : 'Reader mode',
+          style: iconBtnStyle(readerMode),
+        }, '▤') : null}
+        ${view === 'panes' && readerMode ? h('button', {
+          onClick: cycleReaderSize,
+          title: 'Text size',
+          style: iconBtnStyle(false),
+        }, (READER_SIZES[readerSize] || READER_SIZES.m).label) : null}
         ${h('button', {
           onClick: toggleTheme,
           title: lightMode ? 'Switch to dark mode' : 'Switch to light mode',
-          style: {
-            background:    lightMode ? C.amber + '20' : 'transparent',
-            border:        `1px solid ${lightMode ? C.amber : C.borderDim}`,
-            color:         lightMode ? C.amberHi : C.dim,
-            fontFamily:    'inherit',
-            fontSize:      'clamp(7px,0.75vw,10px)',
-            padding:       '2px 6px',
-            cursor:        'pointer',
-            lineHeight:    1,
-            letterSpacing: '0.5px',
-          },
+          style: iconBtnStyle(lightMode),
         }, lightMode ? '☾' : '☀')}
         <span>${subtitle}</span>
       </span>
@@ -1644,7 +1670,7 @@ function warmXterm() {
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS  = 15000;
 
-function ConsolePane({ vmid, visible, lightMode, readerMode }) {
+function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
   const containerRef  = useRef(null); // outer layout box (sized by PaneGrid)
   const xtermHostRef  = useRef(null); // inner absolute-fill box xterm actually renders into;
                                        // split from containerRef so reader mode can hide just
@@ -1945,16 +1971,21 @@ function ConsolePane({ vmid, visible, lightMode, readerMode }) {
         pointerEvents: readerMode ? 'none' : 'auto',
       },
     }),
+    readerMode ? h(ReaderView, {
+      term:  termReady ? termRef.current : null,
+      size:  readerSize,
+      theme: lightMode ? LIGHT_TERM_THEME : DARK_TERM_THEME,
+      lightMode,
+    }) : null,
   );
 }
 
 // ─── PaneGrid ─────────────────────────────────────────────────────────────────
 // Renders absolutely-positioned terminal panes. Connected panes (visible or minimised)
 // are mounted once and NEVER reparented — hiding uses display:none so sessions persist.
-function PaneGrid({ lxcs, paneStates, lightMode }) {
-  const containerRef              = useRef(null);
-  const [dim, setDim]             = useState({ w: 100, h: 100 });
-  const [focusedVmid, setFocused] = useState(null);
+function PaneGrid({ lxcs, paneStates, lightMode, readerMode, readerSize, focusedVmid, setFocusedVmid }) {
+  const containerRef  = useRef(null);
+  const [dim, setDim] = useState({ w: 100, h: 100 });
 
   useEffect(() => {
     const el = containerRef.current;
@@ -1978,21 +2009,41 @@ function PaneGrid({ lxcs, paneStates, lightMode }) {
   const visible   = connected.filter(l => ((paneStates && paneStates[l.vmid]) || 'closed') === 'visible');
 
   const rects  = computePaneRects(visible.length, dim.w, dim.h);
-  const rectMap = {};
+  let rectMap  = {};
   visible.forEach((l, i) => { rectMap[l.vmid] = rects[i]; });
+
+  // Reader mode shows only the focused pane, filling the whole area. Falls
+  // back to the first visible pane when focusedVmid is null or stale (points
+  // at a pane that's since closed/minimized). Derived as a plain const, never
+  // written back into state, so a stale value can't cause a render loop.
+  const effectiveFocus = readerMode
+    ? ((focusedVmid && rectMap[focusedVmid]) ? focusedVmid : (visible[0] && visible[0].vmid))
+    : focusedVmid;
+  if (readerMode) {
+    rectMap = effectiveFocus ? { [effectiveFocus]: { x: 0, y: 0, w: dim.w, h: dim.h } } : {};
+  }
 
   return h('div', {
     ref:   containerRef,
     style: { flex: 1, position: 'relative', overflow: 'hidden', minHeight: 0, background: C.amber + '50' },
   },
+    readerMode && !effectiveFocus
+      ? h('div', {
+          style: {
+            position: 'absolute', inset: 0, display: 'flex',
+            alignItems: 'center', justifyContent: 'center',
+            color: C.dim, fontSize: 'clamp(10px,1.2vw,14px)', letterSpacing: '0.5px',
+          },
+        }, 'NO VISIBLE PANES')
+      : null,
     connected.map(lxc => {
       const rect      = rectMap[lxc.vmid];
       const isVisible = !!rect;
-      const isFocused = focusedVmid === lxc.vmid;
+      const isFocused = effectiveFocus === lxc.vmid;
 
       return h('div', {
         key:     lxc.vmid,
-        onClick: () => setFocused(lxc.vmid),
+        onClick: () => setFocusedVmid(lxc.vmid),
         style: {
           position:  'absolute',
           left:      isVisible ? rect.x + 'px' : '0',
@@ -2001,11 +2052,14 @@ function PaneGrid({ lxcs, paneStates, lightMode }) {
           height:    isVisible ? rect.h + 'px' : '0',
           display:   isVisible ? 'block' : 'none',
           boxSizing: 'border-box',
-          border:    `2px solid ${isFocused ? C.amberHi : C.borderDim}`,
+          border:    readerMode ? 'none' : `2px solid ${isFocused ? C.amberHi : C.borderDim}`,
           overflow:  'hidden',
         },
       },
-        h(ConsolePane, { key: 'term-' + lxc.vmid, vmid: lxc.vmid, visible: isVisible, lightMode }),
+        h(ConsolePane, {
+          key: 'term-' + lxc.vmid, vmid: lxc.vmid, visible: isVisible, lightMode,
+          readerMode: readerMode && isFocused, readerSize,
+        }),
       );
     }),
   );
@@ -2016,13 +2070,13 @@ const NODE_ENTRY = { vmid: 'node', display_name: 'ROOT', status: 'running', _isN
 
 // ─── PanesView ────────────────────────────────────────────────────────────────
 // All auth is handled server-side; the browser only talks to the dashboard.
-function PanesView({ lxcs, paneStates, lightMode }) {
+function PanesView({ lxcs, paneStates, lightMode, readerMode, readerSize, focusedVmid, setFocusedVmid }) {
   // Pre-warm the xterm.js CDN fetch the moment the user switches to panes view,
   // so the first tab click is instant rather than waiting for a cold CDN download.
   useEffect(() => { injectXtermCss(); warmXterm(); }, []);
   // Prepend the ROOT shell so PaneGrid knows to render a ConsolePane for it
   const allPanes = [NODE_ENTRY, ...lxcs];
-  return h(PaneGrid, { lxcs: allPanes, paneStates, lightMode });
+  return h(PaneGrid, { lxcs: allPanes, paneStates, lightMode, readerMode, readerSize, focusedVmid, setFocusedVmid });
 }
 
 // ─── App ─────────────────────────────────────────────────────────────────────
@@ -2038,6 +2092,13 @@ function App() {
   const [paneStates,  setPaneStates] = useState({});          // vmid → 'closed'|'visible'|'minimized'
   const [keyRowOpen,  setKeyRowOpen] = useState(false);       // mobile-only on-screen key row
   const [lightMode,   setLightMode]  = useState(() => localStorage.getItem('panelTheme') === 'light');
+  const [readerMode,  setReaderMode] = useState(() => localStorage.getItem('panelReader') === '1');
+  const [readerSize,  setReaderSize] = useState(() => localStorage.getItem('panelReaderSize') || 'm');
+  // Which pane reader mode shows full-screen. Lives here (not in PaneGrid) because
+  // in reader mode the non-focused panes are display:none and the focused one sits
+  // behind a pointer-events:none host, so the tab strip — driven by App's own
+  // handleTabClick — is the only way left to change what's being read.
+  const [focusedVmid, setFocusedVmid] = useState(null);
   const flickerRef = useRef({});
   const lxcsRef    = useRef([]);
 
@@ -2113,6 +2174,12 @@ function App() {
       const updated = { ...prev, [vmid]: next };
       savePaneStates(updated);
       return updated;
+    });
+    // Becoming visible is a clear "look at this one" signal — also what reader
+    // mode needs, since its own click-to-focus path is unreachable per above.
+    setFocusedVmid(prevFocus => {
+      const cur = paneStates[vmid] || 'closed';
+      return cur !== 'visible' ? vmid : prevFocus;
     });
   }
 
@@ -2192,11 +2259,22 @@ function App() {
             transform:  ${view === 'panes' ? 'scale(1)' : 'scale(0.96)'};
             pointer-events: ${view === 'panes' ? 'auto' : 'none'};
           ">
-            ${h(PanesView, { lxcs, paneStates, lightMode })}
+            ${h(PanesView, {
+              lxcs, paneStates, lightMode,
+              // Gated on view==='panes': both views stay mounted (see the
+              // cross-fade above), so without this a persisted readerMode
+              // would keep resizing every PTY to reader geometry while the
+              // dashboard is what's actually showing.
+              readerMode: readerMode && view === 'panes',
+              readerSize, focusedVmid, setFocusedVmid,
+            })}
           </div>
         </div>
 
-        ${h(Footer, { config, node: status ? status.node : null, lightMode, setLightMode })}
+        ${h(Footer, {
+          config, node: status ? status.node : null, lightMode, setLightMode,
+          view, readerMode, setReaderMode, readerSize, setReaderSize,
+        })}
       </div>
       ${view === 'panes' && narrow && keyRowOpen
         ? h(MobileKeyRow, { onClose: () => setKeyRowOpen(false) })
