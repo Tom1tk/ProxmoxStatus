@@ -57,10 +57,11 @@ class ProxmoxClient {
     const headers = { Authorization: cfg.api_token };
     const base = `${cfg.proxmox_host}/api2/json/nodes/${cfg.proxmox_node}`;
 
-    const [nodeStatus, lxcList, rrdData] = await Promise.all([
+    const [nodeStatus, lxcList, rrdData, versionInfo] = await Promise.all([
       this._get(`${base}/status`, headers, agent),
       this._get(`${base}/lxc`, headers, agent),
       this._get(`${base}/rrddata?timeframe=hour&cf=AVERAGE`, headers, agent),
+      this._get(`${cfg.proxmox_host}/api2/json/version`, headers, agent),
     ]);
 
     // Node metrics
@@ -93,6 +94,7 @@ class ProxmoxClient {
         net_in: netIn,
         net_out: netOut,
         uptime: ns.uptime || 0,
+        pve_version: versionInfo.data ? versionInfo.data.version : null,
       },
       lxcs,
     };
