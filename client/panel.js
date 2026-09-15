@@ -2008,7 +2008,10 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
       style: {
         position: 'absolute', inset: 0, background: termBg,
         opacity:       readerMode ? 0    : 1,
-        pointerEvents: readerMode ? 'none' : 'auto',
+        // Never an explicit 'auto': a descendant's auto overrides the hidden
+        // panes view's pointer-events:none, and since that view stacks above
+        // the dashboard it would swallow every dashboard click.
+        pointerEvents: readerMode ? 'none' : undefined,
       },
     }),
     readerMode ? h(ReaderView, {
