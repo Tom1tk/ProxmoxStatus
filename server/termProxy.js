@@ -5,6 +5,9 @@ const fetch = require('node-fetch');
 const { WebSocketServer, WebSocket } = require('ws');
 const { getConfig }   = require('./config');
 const consoleAuth     = require('./console');
+const ownership       = require('./sizeOwnership');
+
+const CID_RE = /^[a-z0-9]{8,32}$/;
 
 function createTermProxyServer(httpServer) {
   const wss = new WebSocketServer({ noServer: true });
@@ -15,21 +18,26 @@ function createTermProxyServer(httpServer) {
     const isNode   = url.pathname === '/api/node/termproxy';
 
     if (lxcMatch) {
-      wss.handleUpgrade(request, socket, head, ws => handleTermConnection(ws, lxcMatch[1]));
+      // cid: stable per-browser id for size ownership (see sizeOwnership.js).
+      // Just a label; an unexpected value gets a throwaway id.
+      const rawCid = url.searchParams.get('cid') || '';
+      const cid    = CID_RE.test(rawCid) ? rawCid : Math.random().toString(36).slice(2, 12);
+      wss.handleUpgrade(request, socket, head, ws => handleTermConnection(ws, lxcMatch[1], cid));
     } else if (isNode) {
-      wss.handleUpgrade(request, socket, head, ws => handleTermConnection(ws, null));
+      wss.handleUpgrade(request, socket, head, ws => handleTermConnection(ws, null, null));
     } else {
       socket.destroy();
     }
   });
 
-  async function handleTermConnection(clientWs, vmid) {
+  async function handleTermConnection(clientWs, vmid, cid) {
     const cfg    = getConfig();
     const agent  = new https.Agent({ rejectUnauthorized: cfg.verify_ssl });
     const isNode = vmid === null;
     const label  = isNode ? 'node-shell' : `LXC ${vmid}`;
 
     let proxmoxWs;
+    let conn = null; // size-ownership handle; LXC only — each node shell has its own PTY
 
     try {
       const { ticket: pveCookie, csrf } = await consoleAuth.getTicket();
@@ -69,15 +77,22 @@ function createTermProxyServer(httpServer) {
         console.log(`[termproxy] ${label} connected`);
       });
 
+      if (!isNode) conn = ownership.join(vmid, cid, clientWs, proxmoxWs);
+
       proxmoxWs.on('message', (data, isBinary) => {
         if (clientWs.readyState === WebSocket.OPEN) clientWs.send(data, { binary: isBinary });
+        // First Proxmox message is the auth "OK"; forwarded above first so the
+        // client sees it before the ownership control frame.
+        if (conn && !conn.ready) ownership.markReady(conn);
       });
       clientWs.on('message', (data, isBinary) => {
+        if (conn && ownership.handleClientFrame(conn, data)) return;
         if (proxmoxWs.readyState === WebSocket.OPEN) proxmoxWs.send(data, { binary: isBinary });
       });
 
       proxmoxWs.on('close', () => {
         console.log(`[termproxy] ${label}: Proxmox closed`);
+        if (conn) ownership.leave(conn);
         if (clientWs.readyState === WebSocket.OPEN) clientWs.close(1000);
       });
       proxmoxWs.on('error', err => {
@@ -96,10 +111,12 @@ function createTermProxyServer(httpServer) {
 
     clientWs.on('close', code => {
       console.log(`[termproxy] ${label}: client disconnected (${code})`);
+      if (conn) ownership.leave(conn);
       if (proxmoxWs && proxmoxWs.readyState !== WebSocket.CLOSED) proxmoxWs.close();
     });
     clientWs.on('error', err => {
       console.error(`[termproxy] ${label}: client error:`, err.message);
+      if (conn) ownership.leave(conn);
       if (proxmoxWs && proxmoxWs.readyState !== WebSocket.CLOSED) proxmoxWs.close();
     });
   }
