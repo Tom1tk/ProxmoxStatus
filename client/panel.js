@@ -1691,6 +1691,14 @@ const CLIENT_ID = (() => {
   } catch { return fresh(); }
 })();
 const CTL_PREFIX = '\x00pp:';
+// Device-level ownership. A real gesture on any pane makes this device the
+// active one and claims every open terminal; while active, any pane that
+// connects or becomes visible claims too. Cleared when another device claims.
+const _device = { active: false, claimers: new Set() };
+function claimAllTerminals() {
+  _device.active = true;
+  _device.claimers.forEach(claim => claim());
+}
 // Desktop mouse only: touch devices fire synthetic mouseenter on tap, which
 // would raise the soft keyboard on every scroll drag.
 const HOVER_FOCUS = window.matchMedia?.('(hover: hover) and (pointer: fine)').matches ?? false;
@@ -1797,6 +1805,9 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
         try {
           const watch = watchRef.current;
           if (watch.watching) {
+            // Visible again / newly connected on the active device: take it
+            // (no-op while hidden - claim needs a non-zero proposed size).
+            if (_device.active) claimRef.current?.();
             t.resize(watch.cols, watch.rows);
             requestAnimationFrame(() => scaleToHost(t, host));
             return;
@@ -1887,11 +1898,12 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
         ws.send(`9:${want.cols}:${want.rows}:`);
       };
       claimRef.current = claim;
+      _device.claimers.add(claim);
 
       const sendStr = str => {
         const ws = wsRef.current;
         if (ws?.readyState === WebSocket.OPEN && readyRef.current) {
-          claim(); // e.g. MobileKeyRow typing into a pane another device took over
+          if (!_device.active || watchRef.current.watching) claimAllTerminals(); // e.g. MobileKeyRow after another device took over
           ws.send(`0:${new TextEncoder().encode(str).length}:${str}`);
         }
       };
@@ -1938,6 +1950,8 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
       function onOwnership(json) {
         let msg;
         try { msg = JSON.parse(json); } catch { return; }
+        // Another device claimed this terminal: it's now the active one.
+        if (msg.claimed && !msg.owner) _device.active = false;
         const watching = !msg.owner && !!msg.cols && !!msg.rows;
         watchRef.current = { watching, cols: msg.cols, rows: msg.rows };
         claimPendingRef.current = false;
@@ -2029,6 +2043,7 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
       touchCleanupRef.current = null;
       applyGeometryRef.current = null;
       connectNowRef.current = null;
+      _device.claimers.delete(claimRef.current);
       claimRef.current = null;
       termRef.current?.dispose();
       termRef.current = null;
@@ -2126,7 +2141,7 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
     // element. Force the transition with an explicit blur first.
     const ta = termRef.current?.textarea;
     if (!ta) return;
-    claimRef.current?.();
+    claimAllTerminals();
     ta.blur();
     ta.focus();
   }, []);
@@ -2161,9 +2176,9 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
       // Mouse moving over a pane another device took over while this one kept
       // focus: no focus event fires then, so claim here. Only a flag check
       // unless actually watching.
-      onPointerDown: () => claimRef.current?.(),
+      onPointerDown: claimAllTerminals,
       onMouseMove: HOVER_FOCUS && !readerMode
-        ? () => { if (watchRef.current.watching) claimRef.current?.(); }
+        ? () => { if (watchRef.current.watching || !_device.active) claimAllTerminals(); }
         : undefined,
     }),
     readerMode ? h(ReaderView, {
