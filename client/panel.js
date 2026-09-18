@@ -1411,6 +1411,10 @@ function Footer({ config, node, lightMode, setLightMode, view, readerMode, setRe
     lineHeight:    1,
     letterSpacing: '0.5px',
   });
+  // Swallow mousedown so clicking a footer button never moves focus off the
+  // terminal - otherwise typing after a theme toggle goes into the button.
+  // The click itself still fires.
+  const keepFocus = e => e.preventDefault();
 
   return html`
     <div style="
@@ -1425,16 +1429,19 @@ function Footer({ config, node, lightMode, setLightMode, view, readerMode, setRe
       <span style="display:flex;align-items:center;gap:clamp(6px,0.8vw,10px)">
         ${view === 'panes' && readerMode ? h('button', {
           onClick: cycleReaderSize,
+          onMouseDown: keepFocus,
           title: 'Text size',
           style: iconBtnStyle(false),
         }, (READER_SIZES[readerSize] || READER_SIZES.m).label) : null}
         ${view === 'panes' ? h('button', {
           onClick: toggleReader,
+          onMouseDown: keepFocus,
           title: readerMode ? 'Exit reader mode' : 'Reader mode',
           style: iconBtnStyle(readerMode),
         }, '▤') : null}
         ${h('button', {
           onClick: toggleTheme,
+          onMouseDown: keepFocus,
           title: lightMode ? 'Switch to dark mode' : 'Switch to light mode',
           style: iconBtnStyle(lightMode),
         }, lightMode ? '☾' : '☀')}
@@ -1669,6 +1676,10 @@ function warmXterm() {
 // container doesn't get hammered with connection attempts.
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS  = 15000;
+const STATUS_TIMEOUT_MS = 4000;
+// Desktop mouse only: touch devices fire synthetic mouseenter on tap, which
+// would raise the soft keyboard on every scroll drag.
+const HOVER_FOCUS = window.matchMedia?.('(hover: hover) and (pointer: fine)').matches ?? false;
 
 function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
   const containerRef  = useRef(null); // outer layout box (sized by PaneGrid)
@@ -1696,6 +1707,7 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
   // ResizeObserver, a reconnect, or the un-minimise effect running on its own.
   const geomRef          = useRef({ mode: 'fit', cols: null, rows: null });
   const applyGeometryRef = useRef(null);
+  const connectNowRef    = useRef(null); // skips a pending reconnect backoff (tab resume)
   // True once term.open() has run. The Terminal is created inside an async IIFE
   // (below) that awaits the xterm CDN import, so termRef.current is null for a
   // beat after mount - anything that needs to touch the live terminal (like
@@ -1916,6 +1928,13 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
       }
 
       connect();
+      // Returning to the tab shouldn't mean sitting out the rest of a backoff
+      // (up to 15s) that started while the socket was throttled in the background.
+      connectNowRef.current = () => {
+        if (destroyed || wsRef.current?.readyState !== WebSocket.CLOSED) return;
+        clearTimeout(reconnectRef.current);
+        connect();
+      };
       // Note: this async IIFE's own return value is just the resolved promise,
       // NOT an effect cleanup — Preact never sees it. All teardown for what's
       // set up in here (ro, touch listeners) happens via the refs below, in the
@@ -1934,6 +1953,7 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
       roRef.current = null;
       touchCleanupRef.current = null;
       applyGeometryRef.current = null;
+      connectNowRef.current = null;
       termRef.current?.dispose();
       termRef.current = null;
       fitRef.current  = null;
@@ -1951,6 +1971,48 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
       applyGeometryRef.current?.();
     });
   }, [visible]);
+
+  // Tab/desktop resume and monitor (devicePixelRatio) changes. The
+  // ResizeObserver can't catch these: the container is the same size, but
+  // xterm's cached cell metrics may be stale (a DPR change halves or doubles
+  // them - the "terminal drawn at 1/4 size" symptom) and another client may
+  // have resized the shared PTY meanwhile. A fontSize round-trip forces
+  // xterm to re-measure; applyGeometry then refits and, in fit mode,
+  // re-sends cols/rows even if unchanged.
+  useEffect(() => {
+    if (!termReady) return;
+    const remeasure = () => {
+      const t = termRef.current;
+      if (!t) return;
+      try {
+        const fs = t.options.fontSize;
+        t.options.fontSize = fs + 1;
+        t.options.fontSize = fs;
+        applyGeometryRef.current?.();
+        t.refresh(0, t.rows - 1);
+      } catch {}
+    };
+    const onResume = () => {
+      if (document.hidden) return;
+      connectNowRef.current?.();
+      remeasure();
+    };
+    let mq = null;
+    const onDprChange = () => { remeasure(); armDpr(); };
+    const armDpr = () => {
+      mq?.removeEventListener('change', onDprChange);
+      mq = window.matchMedia?.(`(resolution: ${window.devicePixelRatio}dppx)`) ?? null;
+      mq?.addEventListener('change', onDprChange);
+    };
+    armDpr();
+    document.addEventListener('visibilitychange', onResume);
+    window.addEventListener('focus', onResume);
+    return () => {
+      mq?.removeEventListener('change', onDprChange);
+      document.removeEventListener('visibilitychange', onResume);
+      window.removeEventListener('focus', onResume);
+    };
+  }, [termReady]);
 
   // ReaderView drives geomRef itself (via onGeometry below) while it's
   // mounted, but nothing reverts it when reader mode turns off — without
@@ -2013,6 +2075,12 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
         // the dashboard it would swallow every dashboard click.
         pointerEvents: readerMode ? 'none' : undefined,
       },
+      // Focus-follows-mouse, Linux-DE style. DOM focus only; the textarea's
+      // focus listener retargets _activeTerm.send. Skipped mid-drag so a
+      // selection crossing panes doesn't jump focus.
+      onMouseEnter: HOVER_FOCUS && !readerMode
+        ? e => { if (!e.buttons) termRef.current?.focus(); }
+        : undefined,
     }),
     readerMode ? h(ReaderView, {
       term:  termReady ? termRef.current : null,
@@ -2089,6 +2157,11 @@ function PaneGrid({ lxcs, paneStates, lightMode, readerMode, readerSize, focused
       return h('div', {
         key:     lxc.vmid,
         onClick: () => setFocusedVmid(lxc.vmid),
+        // Keep the focus border in step with hover-focus (ConsolePane). Only on
+        // enter, and only when it actually changes, so no re-render churn.
+        onMouseEnter: HOVER_FOCUS && !readerMode && !isFocused
+          ? e => { if (!e.buttons) setFocusedVmid(lxc.vmid); }
+          : undefined,
         style: {
           position:  'absolute',
           left:      isVisible ? rect.x + 'px' : '0',
@@ -2170,7 +2243,9 @@ function App() {
 
   const poll = useCallback(async () => {
     try {
-      const res = await fetch('/api/status');
+      // Timeout so a poll hung across a tab switch fails fast instead of
+      // straddling the resume.
+      const res = await fetch('/api/status', { signal: AbortSignal.timeout?.(STATUS_TIMEOUT_MS) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setStatus(data);
@@ -2178,7 +2253,10 @@ function App() {
       setFailCount(0);
       lxcsRef.current = data.lxcs || [];
     } catch {
-      setFailCount(f => f + 1);
+      // Background tabs get timers throttled and in-flight fetches aborted;
+      // those failures say nothing about the server, and counting them is what
+      // put CONNECTION LOST over live terminals on every tab/desktop switch.
+      if (!document.hidden) setFailCount(f => f + 1);
     }
   }, []);
 
@@ -2186,6 +2264,20 @@ function App() {
     poll();
     const id = setInterval(poll, 5000);
     return () => clearInterval(id);
+  }, [poll]);
+
+  // On returning to the tab, re-poll now rather than waiting up to 5s - a
+  // success clears the overlay, a real outage keeps it. window 'focus' as well
+  // as visibilitychange: switching virtual desktops doesn't reliably flip
+  // document.hidden.
+  useEffect(() => {
+    const onResume = () => { if (!document.hidden) poll(); };
+    document.addEventListener('visibilitychange', onResume);
+    window.addEventListener('focus', onResume);
+    return () => {
+      document.removeEventListener('visibilitychange', onResume);
+      window.removeEventListener('focus', onResume);
+    };
   }, [poll]);
 
   useEffect(() => {
