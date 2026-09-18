@@ -1913,9 +1913,11 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
       // key row immediately — not just after the user's first keystroke. Without
       // this, switching tabs and pressing a key-row button before typing anything
       // sends to whichever pane was last typed into instead of the one on screen.
-      // Focus is also the ownership claim: hover-focus, click, reader tap,
-      // window refocus and the post-connect term.focus() all land here.
-      focusHandlerRef.current = () => { _activeTerm.send = sendStr; claim(); };
+      // Deliberately NOT an ownership claim: focus also fires programmatically
+      // (post-connect term.focus(), reader auto-focus), which would let a device
+      // merely loading the page steal the size. Claims come from real gestures:
+      // pointerdown, mouse movement, reader tap, typing.
+      focusHandlerRef.current = () => { _activeTerm.send = sendStr; };
       term.textarea?.addEventListener('focus', focusHandlerRef.current);
 
       // Proxmox resize protocol: "1:cols:rows:"
@@ -2124,6 +2126,7 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
     // element. Force the transition with an explicit blur first.
     const ta = termRef.current?.textarea;
     if (!ta) return;
+    claimRef.current?.();
     ta.blur();
     ta.focus();
   }, []);
@@ -2158,6 +2161,7 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
       // Mouse moving over a pane another device took over while this one kept
       // focus: no focus event fires then, so claim here. Only a flag check
       // unless actually watching.
+      onPointerDown: () => claimRef.current?.(),
       onMouseMove: HOVER_FOCUS && !readerMode
         ? () => { if (watchRef.current.watching) claimRef.current?.(); }
         : undefined,
