@@ -1677,9 +1677,35 @@ function warmXterm() {
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS  = 15000;
 const STATUS_TIMEOUT_MS = 4000;
+// Size ownership (server/sizeOwnership.js): stable per-browser id so a device
+// that reconnects is still recognised as the one that owns a terminal's size.
+const CLIENT_ID = (() => {
+  const fresh = () => Math.random().toString(36).slice(2, 14).padEnd(8, '0');
+  try {
+    let id = localStorage.getItem('panelClientId');
+    if (!/^[a-z0-9]{8,32}$/.test(id || '')) {
+      id = fresh();
+      localStorage.setItem('panelClientId', id);
+    }
+    return id;
+  } catch { return fresh(); }
+})();
+const CTL_PREFIX = '\x00pp:';
 // Desktop mouse only: touch devices fire synthetic mouseenter on tap, which
 // would raise the soft keyboard on every scroll drag.
 const HOVER_FOCUS = window.matchMedia?.('(hover: hover) and (pointer: fine)').matches ?? false;
+
+// Watching: xterm is at the owner's cols/rows, which may not fit this pane.
+// Shrink it to fit (never enlarge) using the rendered grid's own size, so no
+// private xterm API or separate character measurement is needed.
+function scaleToHost(term, host) {
+  const el     = term.element;
+  const screen = el?.querySelector('.xterm-screen');
+  if (!el || !screen || !screen.offsetWidth || !screen.offsetHeight) return;
+  const scale = Math.min(host.clientWidth / screen.offsetWidth, host.clientHeight / screen.offsetHeight, 1);
+  el.style.transformOrigin = 'top left';
+  el.style.transform = scale < 1 ? `scale(${scale})` : '';
+}
 
 function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
   const containerRef  = useRef(null); // outer layout box (sized by PaneGrid)
@@ -1708,6 +1734,12 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
   const geomRef          = useRef({ mode: 'fit', cols: null, rows: null });
   const applyGeometryRef = useRef(null);
   const connectNowRef    = useRef(null); // skips a pending reconnect backoff (tab resume)
+  // What the server says the shared PTY is. watching = another device owns the
+  // size: render at its cols/rows scaled to fit, and never send resizes.
+  // Separate from geomRef, which stays "what this device wants".
+  const watchRef         = useRef({ watching: false, cols: null, rows: null });
+  const claimRef         = useRef(null); // sends a size claim if watching (see sizeOwnership.js)
+  const claimPendingRef  = useRef(false); // one claim in flight at a time (mousemove can burst)
   // True once term.open() has run. The Terminal is created inside an async IIFE
   // (below) that awaits the xterm CDN import, so termRef.current is null for a
   // beat after mount - anything that needs to touch the live terminal (like
@@ -1763,6 +1795,13 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
         if (!host || host.clientWidth === 0 || host.clientHeight === 0) return;
         const t = termRef.current;
         try {
+          const watch = watchRef.current;
+          if (watch.watching) {
+            t.resize(watch.cols, watch.rows);
+            requestAnimationFrame(() => scaleToHost(t, host));
+            return;
+          }
+          if (t.element) t.element.style.transform = '';
           const geom = geomRef.current;
           if (geom.mode === 'reader' && geom.cols && geom.rows) {
             t.resize(geom.cols, geom.rows);
@@ -1834,9 +1873,25 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
       // Register this terminal as active on every keystroke so the tmux prefix
       // button always targets whichever pane the user last interacted with.
       // Reads wsRef.current so it keeps working across reconnects.
+      // Take over this terminal's size at the size this device wants. Only
+      // sent while watching, so hover/focus churn on the owning device is free.
+      const claim = () => {
+        const ws = wsRef.current;
+        if (!watchRef.current.watching || !readyRef.current || ws?.readyState !== WebSocket.OPEN) return;
+        const geom = geomRef.current;
+        const want = geom.mode === 'reader' && geom.cols
+          ? geom
+          : fitRef.current?.proposeDimensions();
+        if (!want?.cols || !want?.rows || claimPendingRef.current) return;
+        claimPendingRef.current = true; // cleared by the server's reply (onOwnership)
+        ws.send(`9:${want.cols}:${want.rows}:`);
+      };
+      claimRef.current = claim;
+
       const sendStr = str => {
         const ws = wsRef.current;
         if (ws?.readyState === WebSocket.OPEN && readyRef.current) {
+          claim(); // e.g. MobileKeyRow typing into a pane another device took over
           ws.send(`0:${new TextEncoder().encode(str).length}:${str}`);
         }
       };
@@ -1858,11 +1913,14 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
       // key row immediately — not just after the user's first keystroke. Without
       // this, switching tabs and pressing a key-row button before typing anything
       // sends to whichever pane was last typed into instead of the one on screen.
-      focusHandlerRef.current = () => { _activeTerm.send = sendStr; };
+      // Focus is also the ownership claim: hover-focus, click, reader tap,
+      // window refocus and the post-connect term.focus() all land here.
+      focusHandlerRef.current = () => { _activeTerm.send = sendStr; claim(); };
       term.textarea?.addEventListener('focus', focusHandlerRef.current);
 
       // Proxmox resize protocol: "1:cols:rows:"
       term.onResize(({ cols, rows }) => {
+        if (watchRef.current.watching) return; // server would drop it anyway
         const ws = wsRef.current;
         if (ws?.readyState === WebSocket.OPEN && readyRef.current) {
           ws.send(`1:${cols}:${rows}:`);
@@ -1874,17 +1932,32 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
       // a dropped connection recovers on its own — each (re)connect gets a
       // fresh PTY/shell from Proxmox, same as manually closing and reopening
       // the pane via its tab.
+      // Ownership control frame from the server: { owner, cols, rows }.
+      function onOwnership(json) {
+        let msg;
+        try { msg = JSON.parse(json); } catch { return; }
+        const watching = !msg.owner && !!msg.cols && !!msg.rows;
+        watchRef.current = { watching, cols: msg.cols, rows: msg.rows };
+        claimPendingRef.current = false;
+        applyGeometryRef.current?.();
+      }
+
       function connect() {
         if (destroyed) return;
         readyRef.current = false;
+        claimPendingRef.current = false; // a claim lost with the old socket
 
         const proto  = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsPath = vmid === 'node' ? '/api/node/termproxy' : `/api/lxc/${vmid}/termproxy`;
+        const wsPath = vmid === 'node' ? '/api/node/termproxy' : `/api/lxc/${vmid}/termproxy?cid=${CLIENT_ID}`;
         const ws     = new WebSocket(`${proto}//${location.host}${wsPath}`, ['binary']);
         ws.binaryType = 'arraybuffer';
         wsRef.current = ws;
 
         ws.onmessage = e => {
+          if (typeof e.data === 'string' && e.data.startsWith(CTL_PREFIX)) {
+            onOwnership(e.data.slice(CTL_PREFIX.length));
+            return;
+          }
           const data = new Uint8Array(e.data instanceof ArrayBuffer ? e.data : new TextEncoder().encode(e.data));
           if (!readyRef.current) {
             // Proxmox sends "OK" (0x4F 0x4B) to confirm auth; anything after is terminal data
@@ -1954,6 +2027,7 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
       touchCleanupRef.current = null;
       applyGeometryRef.current = null;
       connectNowRef.current = null;
+      claimRef.current = null;
       termRef.current?.dispose();
       termRef.current = null;
       fitRef.current  = null;
@@ -2080,6 +2154,12 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
       // selection crossing panes doesn't jump focus.
       onMouseEnter: HOVER_FOCUS && !readerMode
         ? e => { if (!e.buttons) termRef.current?.focus(); }
+        : undefined,
+      // Mouse moving over a pane another device took over while this one kept
+      // focus: no focus event fires then, so claim here. Only a flag check
+      // unless actually watching.
+      onMouseMove: HOVER_FOCUS && !readerMode
+        ? () => { if (watchRef.current.watching) claimRef.current?.(); }
         : undefined,
     }),
     readerMode ? h(ReaderView, {
