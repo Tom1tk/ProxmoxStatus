@@ -9,11 +9,15 @@
 // (a browser) owns each vmid's size: only its resizes reach Proxmox, and the
 // other connections are kept at the owner's size and told it via a small
 // control frame so they can render scaled ("watching"). A client takes
-// ownership by sending a claim frame, which it does when the user focuses the
-// pane. Frames are Proxmox-protocol-shaped but never forwarded:
+// ownership by sending a claim frame; the client claims all its terminals at
+// once when the user interacts with any pane (the device becomes "active").
+// Frames are Proxmox-protocol-shaped but never forwarded:
 //
 //   client → server   9:cols:rows:   claim at my desired size
-//   server → client   \x00pp:{json}  { owner, cols, rows } (text frame)
+//   server → client   \x00pp:{json}  { owner, cols, rows, claimed? } (text frame)
+//
+// `claimed` marks frames caused by a claim, so a device can tell "another
+// device just took over" apart from routine updates (connect, handover).
 
 const CTL_PREFIX = '\x00pp:';
 const MAX_DIM    = 1000;
@@ -28,17 +32,18 @@ function parseDims(data) {
   return ok(cols) && ok(rows) ? { cols, rows } : null;
 }
 
-function sendCtl(session, conn) {
+function sendCtl(session, conn, claimed = false) {
   if (conn.clientWs.readyState !== 1) return;
   conn.clientWs.send(CTL_PREFIX + JSON.stringify({
     owner: conn.cid === session.ownerId,
     cols:  session.cols,
     rows:  session.rows,
+    ...(claimed && { claimed: true }),
   }));
 }
 
-function broadcastCtl(session) {
-  for (const conn of session.conns) if (conn.ready) sendCtl(session, conn);
+function broadcastCtl(session, claimed = false) {
+  for (const conn of session.conns) if (conn.ready) sendCtl(session, conn, claimed);
 }
 
 // Keeps every connection's PTY at the owner's size, so any lxc-console that
@@ -92,7 +97,7 @@ function handleClientFrame(conn, data) {
   if (b0 === 0x39) {
     session.ownerId = conn.cid;
     applySize(session, dims);
-    broadcastCtl(session);
+    broadcastCtl(session, true);
     return true;
   }
   if (conn.cid !== session.ownerId) return true; // watcher resize: drop
