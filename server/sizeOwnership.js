@@ -71,14 +71,18 @@ function join(vmid, cid, clientWs, proxmoxWs) {
   return conn;
 }
 
-// Proxmox has authenticated this connection (sent "OK"). A watcher's
-// lxc-console has just attached at its PTY's default size — put it straight
-// back to the owner's.
+// Proxmox has authenticated this connection (sent "OK"). Its lxc-console has
+// just attached at the fresh PTY's default size, overwriting the console's
+// size for everyone — push the known size straight back. This applies to the
+// OWNER's own reconnect too: its client may re-apply identical geometry,
+// which resizes nothing locally and so sends nothing, leaving the container
+// stuck at 80x24 inside a larger terminal (the "missing output after a long
+// idle" glitch).
 function markReady(conn) {
   const session = sessions.get(conn.vmid);
   if (!session) return;
   conn.ready = true;
-  if (session.cols && conn.cid !== session.ownerId && conn.proxmoxWs.readyState === 1) {
+  if (session.cols && conn.proxmoxWs.readyState === 1) {
     conn.proxmoxWs.send(`1:${session.cols}:${session.rows}:`);
   }
   sendCtl(session, conn);

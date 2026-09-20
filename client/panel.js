@@ -1989,6 +1989,13 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
               // geometry instead of reverting to pane-fit geometry.
               requestAnimationFrame(() => requestAnimationFrame(() => {
                 applyGeometryRef.current?.();
+                // Always restate the size on (re)connect: this is a brand-new
+                // PTY whose attach just resized the container console, and
+                // applyGeometry stays silent when the local geometry is
+                // unchanged (notably reader mode).
+                if (!watchRef.current.watching && readyRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
+                  wsRef.current.send(`1:${term.cols}:${term.rows}:`);
+                }
                 if (!reconnected) term.focus();
               }));
             }
