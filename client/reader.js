@@ -109,18 +109,23 @@ function hslToRgbHex(h, s, l) {
 }
 
 // Push a colour's HSL lightness toward the legible end (dark bg → lighter,
-// light bg → darker) until it clears a ~3.5:1 contrast ratio against `bgHex`,
-// preserving hue/saturation. Bails out after 20 steps (5% each) rather than
-// looping to a degenerate pure black/white.
+// light bg → darker) until it clears the minimum contrast ratio against
+// `bgHex`, preserving hue/saturation. Bails out after 20 steps (5% each)
+// rather than looping to a degenerate pure black/white. Light mode matches
+// the xterm view's minimumContrastRatio (panel.js LIGHT_MIN_CONTRAST): TUIs
+// that chose a dark palette at startup need the stronger floor there.
+const MIN_CONTRAST_DARK  = 3.5;
+const MIN_CONTRAST_LIGHT = 4.5;
 function clampForContrast(hex, bgHex, lightMode) {
-  if (contrastRatio(hex, bgHex) >= 3.5) return hex;
+  const min = lightMode ? MIN_CONTRAST_LIGHT : MIN_CONTRAST_DARK;
+  if (contrastRatio(hex, bgHex) >= min) return hex;
   const { r, g, b } = hexToRgb(hex);
   let { h, s, l } = rgbToHsl(r, g, b);
   let out = hex;
   for (let i = 0; i < 20; i++) {
     l = lightMode ? Math.max(0, l - 0.05) : Math.min(1, l + 0.05);
     out = hslToRgbHex(h, s, l);
-    if (contrastRatio(out, bgHex) >= 3.5) break;
+    if (contrastRatio(out, bgHex) >= min) break;
   }
   return out;
 }
