@@ -8,9 +8,28 @@ const consoleAuth     = require('./console');
 const ownership       = require('./sizeOwnership');
 
 const CID_RE = /^[a-z0-9]{8,32}$/;
+// Reply to the client's keepalive "2" (which Proxmox never answers) so the
+// browser can tell a live socket from a half-open one on a flaky network.
+const PING_ACK = '\x00pp:{"ack":1}';
+// Protocol-level ping to every browser socket; one that misses a round is
+// dropped so its Proxmox console session doesn't linger as a ghost.
+const HEARTBEAT_MS = 30000;
 
 function createTermProxyServer(httpServer) {
   const wss = new WebSocketServer({ noServer: true });
+
+  const heartbeat = setInterval(() => {
+    for (const ws of wss.clients) {
+      if (ws.isAlive === false) { ws.terminate(); continue; }
+      ws.isAlive = false;
+      ws.ping();
+    }
+  }, HEARTBEAT_MS);
+  heartbeat.unref();
+  wss.on('connection', ws => {
+    ws.isAlive = true;
+    ws.on('pong', () => { ws.isAlive = true; });
+  });
 
   httpServer.on('upgrade', (request, socket, head) => {
     const url      = new URL(request.url, 'http://localhost');
@@ -22,9 +41,9 @@ function createTermProxyServer(httpServer) {
       // Just a label; an unexpected value gets a throwaway id.
       const rawCid = url.searchParams.get('cid') || '';
       const cid    = CID_RE.test(rawCid) ? rawCid : Math.random().toString(36).slice(2, 12);
-      wss.handleUpgrade(request, socket, head, ws => handleTermConnection(ws, lxcMatch[1], cid));
+      wss.handleUpgrade(request, socket, head, ws => { wss.emit('connection', ws); handleTermConnection(ws, lxcMatch[1], cid); });
     } else if (isNode) {
-      wss.handleUpgrade(request, socket, head, ws => handleTermConnection(ws, null, null));
+      wss.handleUpgrade(request, socket, head, ws => { wss.emit('connection', ws); handleTermConnection(ws, null, null); });
     } else {
       socket.destroy();
     }
@@ -38,6 +57,21 @@ function createTermProxyServer(httpServer) {
 
     let proxmoxWs;
     let conn = null; // size-ownership handle; LXC only — each node shell has its own PTY
+
+    // Registered before the async setup below: a browser that gives up while
+    // we're still fetching a ticket must not leave an orphaned console behind.
+    const teardown = () => {
+      if (conn) ownership.leave(conn);
+      if (proxmoxWs && proxmoxWs.readyState !== WebSocket.CLOSED) proxmoxWs.close();
+    };
+    clientWs.on('close', code => {
+      console.log(`[termproxy] ${label}: client disconnected (${code})`);
+      teardown();
+    });
+    clientWs.on('error', err => {
+      console.error(`[termproxy] ${label}: client error:`, err.message);
+      teardown();
+    });
 
     try {
       const { ticket: pveCookie, csrf } = await consoleAuth.getTicket();
@@ -60,6 +94,7 @@ function createTermProxyServer(httpServer) {
 
       const { data } = await res.json();
       const { ticket: vncticket, port, user } = data;
+      if (clientWs.readyState !== WebSocket.OPEN) return; // browser left mid-setup
 
       const wsBase    = cfg.proxmox_host.replace(/^https/, 'wss').replace(/^http(?!s)/, 'ws');
       const wsockPath = isNode
@@ -86,6 +121,7 @@ function createTermProxyServer(httpServer) {
         if (conn && !conn.ready) ownership.markReady(conn);
       });
       clientWs.on('message', (data, isBinary) => {
+        if (data.length === 1 && data[0] === 0x32) clientWs.send(PING_ACK); // then forwarded
         if (conn && ownership.handleClientFrame(conn, data)) return;
         if (proxmoxWs.readyState === WebSocket.OPEN) proxmoxWs.send(data, { binary: isBinary });
       });
@@ -106,19 +142,7 @@ function createTermProxyServer(httpServer) {
         clientWs.send(`\r\n\x1b[31m[Connection failed: ${err.message}]\x1b[0m\r\n`);
         setTimeout(() => clientWs.close(1011), 100);
       }
-      return;
     }
-
-    clientWs.on('close', code => {
-      console.log(`[termproxy] ${label}: client disconnected (${code})`);
-      if (conn) ownership.leave(conn);
-      if (proxmoxWs && proxmoxWs.readyState !== WebSocket.CLOSED) proxmoxWs.close();
-    });
-    clientWs.on('error', err => {
-      console.error(`[termproxy] ${label}: client error:`, err.message);
-      if (conn) ownership.leave(conn);
-      if (proxmoxWs && proxmoxWs.readyState !== WebSocket.CLOSED) proxmoxWs.close();
-    });
   }
 
   console.log('[termproxy] Terminal WebSocket proxy ready');
