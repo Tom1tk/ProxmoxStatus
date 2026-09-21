@@ -1676,6 +1676,16 @@ function warmXterm() {
 // container doesn't get hammered with connection attempts.
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS  = 15000;
+// Liveness on flaky networks: a dropped connection often leaves the socket
+// "open" with nothing behind it (no onclose, input vanishes). The server acks
+// every keepalive ping, so silence past these limits means the socket is dead.
+const PING_INTERVAL_MS   = 30000;
+const PROBE_TIMEOUT_MS   = 5000;  // resume/online probe
+const CONNECT_TIMEOUT_MS = 10000; // open + Proxmox "OK"
+const PING_ACK = '{"ack":1}';
+// Fired by App when /api/status recovers after failures: the network is back,
+// so every terminal checks its socket rather than waiting out a backoff.
+const REVIVE_EVENT = 'panel:revive';
 const STATUS_TIMEOUT_MS = 4000;
 // Size ownership (server/sizeOwnership.js): stable per-browser id so a device
 // that reconnects is still recognised as the one that owns a terminal's size.
@@ -1958,8 +1968,40 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
         applyGeometryRef.current?.();
       }
 
+      let lastRx = 0;      // time of the last frame of any kind from the server
+      let pingSentAt = 0;  // unanswered keepalive, 0 if answered
+      let connectTimer = null;
+
+      function scheduleReconnect(msg) {
+        clearInterval(pingRef.current);
+        clearTimeout(connectTimer);
+        if (destroyed || !termRef.current) return;
+        attempt += 1;
+        const delay = Math.min(RECONNECT_BASE_MS * 2 ** (attempt - 1), RECONNECT_MAX_MS);
+        term.writeln(`\r\n\x1b[2m[${msg} — reconnecting in ${Math.round(delay / 1000)}s...]\x1b[0m`);
+        clearTimeout(reconnectRef.current);
+        reconnectRef.current = setTimeout(connect, delay);
+      }
+
+      // Abandon a socket that has gone silent. Its handlers check they still
+      // own wsRef, so a late onclose/onmessage from it is ignored.
+      function dropStale(msg) {
+        const ws = wsRef.current;
+        wsRef.current = null;
+        readyRef.current = false;
+        try { ws?.close(); } catch {}
+        scheduleReconnect(msg);
+      }
+
+      function sendPing(ws) {
+        pingSentAt = Date.now();
+        ws.send('2');
+      }
+
       function connect() {
         if (destroyed) return;
+        clearInterval(pingRef.current);
+        clearTimeout(connectTimer);
         readyRef.current = false;
         claimPendingRef.current = false; // a claim lost with the old socket
 
@@ -1968,10 +2010,19 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
         const ws     = new WebSocket(`${proto}//${location.host}${wsPath}`, ['binary']);
         ws.binaryType = 'arraybuffer';
         wsRef.current = ws;
+        lastRx = Date.now();
+        pingSentAt = 0;
+        connectTimer = setTimeout(() => {
+          if (wsRef.current === ws && !readyRef.current) dropStale('connection stalled');
+        }, CONNECT_TIMEOUT_MS);
 
         ws.onmessage = e => {
+          if (wsRef.current !== ws) return;
+          lastRx = Date.now();
+          pingSentAt = 0;
           if (typeof e.data === 'string' && e.data.startsWith(CTL_PREFIX)) {
-            onOwnership(e.data.slice(CTL_PREFIX.length));
+            const json = e.data.slice(CTL_PREFIX.length);
+            if (json !== PING_ACK) onOwnership(json);
             return;
           }
           const data = new Uint8Array(e.data instanceof ArrayBuffer ? e.data : new TextEncoder().encode(e.data));
@@ -1979,6 +2030,7 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
             // Proxmox sends "OK" (0x4F 0x4B) to confirm auth; anything after is terminal data
             if (data[0] === 79 && data[1] === 75) {
               readyRef.current = true;
+              clearTimeout(connectTimer);
               const reconnected = attempt > 0;
               attempt = 0;
               if (data.length > 2) term.write(data.slice(2));
@@ -2005,20 +2057,20 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
           }
         };
 
-        // Keepalive ping every 30 s (Proxmox closes idle connections otherwise)
+        // Keepalive ping (Proxmox closes idle connections otherwise). A ping
+        // still unanswered a whole interval later means the socket is dead.
         pingRef.current = setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) ws.send('2');
-        }, 30000);
+          if (wsRef.current !== ws || !readyRef.current) return;
+          if (pingSentAt) { dropStale('connection lost'); return; }
+          if (ws.readyState === WebSocket.OPEN) sendPing(ws);
+        }, PING_INTERVAL_MS);
 
         ws.onclose = () => {
-          clearInterval(pingRef.current);
-          if (destroyed || !termRef.current) return;
-          attempt += 1;
-          const delay = Math.min(RECONNECT_BASE_MS * 2 ** (attempt - 1), RECONNECT_MAX_MS);
-          term.writeln(`\r\n\x1b[2m[disconnected — reconnecting in ${Math.round(delay / 1000)}s...]\x1b[0m`);
-          reconnectRef.current = setTimeout(connect, delay);
+          if (wsRef.current !== ws) return;
+          scheduleReconnect('disconnected');
         };
         ws.onerror = () => {
+          if (wsRef.current !== ws) return;
           if (!destroyed && termRef.current) term.writeln('\r\n\x1b[31m[connection error]\x1b[0m');
         };
       }
@@ -2026,10 +2078,22 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
       connect();
       // Returning to the tab shouldn't mean sitting out the rest of a backoff
       // (up to 15s) that started while the socket was throttled in the background.
+      // It also runs when the network or the status poll comes back: an open
+      // socket gets a quick probe, since it may be dead without knowing it.
       connectNowRef.current = () => {
-        if (destroyed || wsRef.current?.readyState !== WebSocket.CLOSED) return;
-        clearTimeout(reconnectRef.current);
-        connect();
+        if (destroyed) return;
+        const ws = wsRef.current;
+        if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+          clearTimeout(reconnectRef.current);
+          connect();
+          return;
+        }
+        if (ws.readyState !== WebSocket.OPEN || !readyRef.current) return; // connect timeout covers it
+        const sentAt = Date.now();
+        if (!pingSentAt) sendPing(ws);
+        setTimeout(() => {
+          if (wsRef.current === ws && lastRx < sentAt) dropStale('connection lost');
+        }, PROBE_TIMEOUT_MS);
       };
       // Note: this async IIFE's own return value is just the resolved promise,
       // NOT an effect cleanup — Preact never sees it. All teardown for what's
@@ -2042,7 +2106,9 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
       if (_activeTerm.send === sendStrRef.current) _activeTerm.send = null;
       clearInterval(pingRef.current);
       clearTimeout(reconnectRef.current);
-      wsRef.current?.close();
+      const ws = wsRef.current;
+      wsRef.current = null;
+      ws?.close();
       if (focusHandlerRef.current) termRef.current?.textarea?.removeEventListener('focus', focusHandlerRef.current);
       try { roRef.current?.disconnect(); } catch {}
       try { touchCleanupRef.current?.(); } catch {}
@@ -2095,6 +2161,7 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
       connectNowRef.current?.();
       remeasure();
     };
+    const onRevive = () => connectNowRef.current?.();
     let mq = null;
     const onDprChange = () => { remeasure(); armDpr(); };
     const armDpr = () => {
@@ -2105,10 +2172,14 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
     armDpr();
     document.addEventListener('visibilitychange', onResume);
     window.addEventListener('focus', onResume);
+    window.addEventListener('online', onRevive);
+    window.addEventListener(REVIVE_EVENT, onRevive);
     return () => {
       mq?.removeEventListener('change', onDprChange);
       document.removeEventListener('visibilitychange', onResume);
       window.removeEventListener('focus', onResume);
+      window.removeEventListener('online', onRevive);
+      window.removeEventListener(REVIVE_EVENT, onRevive);
     };
   }, [termReady]);
 
@@ -2325,6 +2396,7 @@ function App() {
   const [focusedVmid, setFocusedVmid] = useState(null);
   const flickerRef = useRef({});
   const lxcsRef    = useRef([]);
+  const failsRef   = useRef(0); // mirrors failCount for poll(), which is memoised
 
   // Update the module-level palette before any child reads it.
   C = lightMode ? LIGHT : DARK;
@@ -2356,13 +2428,18 @@ function App() {
       const data = await res.json();
       setStatus(data);
       setLastUpdate(Date.now());
+      if (failsRef.current > 0) window.dispatchEvent(new Event(REVIVE_EVENT));
+      failsRef.current = 0;
       setFailCount(0);
       lxcsRef.current = data.lxcs || [];
     } catch {
       // Background tabs get timers throttled and in-flight fetches aborted;
       // those failures say nothing about the server, and counting them is what
       // put CONNECTION LOST over live terminals on every tab/desktop switch.
-      if (!document.hidden) setFailCount(f => f + 1);
+      if (!document.hidden) {
+        failsRef.current += 1;
+        setFailCount(f => f + 1);
+      }
     }
   }, []);
 

@@ -21,6 +21,7 @@
 
 const CTL_PREFIX = '\x00pp:';
 const MAX_DIM    = 1000;
+const NUDGE_MS   = 150; // gap between the two halves of a redraw nudge
 
 const sessions = new Map(); // vmid → { ownerId, cols, rows, conns: Set<conn> }
 
@@ -66,7 +67,7 @@ function join(vmid, cid, clientWs, proxmoxWs) {
     sessions.set(vmid, session);
   }
   if (!session.ownerId) session.ownerId = cid;
-  const conn = { vmid, cid, clientWs, proxmoxWs, ready: false };
+  const conn = { vmid, cid, clientWs, proxmoxWs, ready: false, needsNudge: false, nudgeTimer: null };
   session.conns.add(conn);
   return conn;
 }
@@ -84,8 +85,36 @@ function markReady(conn) {
   conn.ready = true;
   if (session.cols && conn.proxmoxWs.readyState === 1) {
     conn.proxmoxWs.send(`1:${session.cols}:${session.rows}:`);
+    nudge(session, conn);
+  } else {
+    // First connection of the session (e.g. a pane closed and reopened): no
+    // size known yet, so bounce once the client states its size.
+    conn.needsNudge = true;
   }
   sendCtl(session, conn);
+}
+
+// Forces a redraw for a freshly attached connection. Its xterm starts empty,
+// and full-screen apps (tmux, Claude Code) only repaint on SIGWINCH — which a
+// restate of the console's existing size never raises, leaving the pane black
+// until something really resizes it. So bounce the size by one row. The two
+// halves are spaced out because SIGWINCH doesn't queue: back to back,
+// lxc-console would read only the final (unchanged) size. Sent to this conn's
+// PTY only — all conns share one console tty, so one bounce redraws everyone.
+// session.cols/rows are deliberately not touched.
+function nudge(session, conn) {
+  const { cols, rows } = session;
+  if (rows < 2) return;
+  conn.proxmoxWs.send(`1:${cols}:${rows - 1}:`);
+  clearTimeout(conn.nudgeTimer);
+  conn.nudgeTimer = setTimeout(() => {
+    conn.nudgeTimer = null;
+    // Restore the session's *current* size: an owner resize may have landed
+    // in between.
+    if (conn.proxmoxWs.readyState === 1 && session.cols) {
+      conn.proxmoxWs.send(`1:${session.cols}:${session.rows}:`);
+    }
+  }, NUDGE_MS);
 }
 
 // Returns true when the frame was consumed here and must not be forwarded.
@@ -102,14 +131,20 @@ function handleClientFrame(conn, data) {
     session.ownerId = conn.cid;
     applySize(session, dims);
     broadcastCtl(session, true);
-    return true;
+  } else if (conn.cid === session.ownerId) {
+    if (applySize(session, dims)) broadcastCtl(session);
+  } else {
+    return true; // watcher resize: drop
   }
-  if (conn.cid !== session.ownerId) return true; // watcher resize: drop
-  if (applySize(session, dims)) broadcastCtl(session);
+  if (conn.needsNudge && conn.ready && conn.proxmoxWs.readyState === 1) {
+    conn.needsNudge = false;
+    nudge(session, conn);
+  }
   return true;
 }
 
 function leave(conn) {
+  clearTimeout(conn.nudgeTimer);
   const session = sessions.get(conn.vmid);
   if (!session || !session.conns.delete(conn)) return;
   if (session.conns.size === 0) {
