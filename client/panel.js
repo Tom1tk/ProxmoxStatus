@@ -81,6 +81,23 @@ const LIGHT_TERM_THEME = {
   white:   '#706858', brightWhite:   '#1a1610',
 };
 
+// Many TUIs pick a dark or light palette once, at startup, and keep it. In
+// light mode xterm lifts any text below this contrast ratio against its
+// background (WCAG AA), so a dark-themed app stays readable on the light
+// terminal without restarting. Dark mode leaves app colours untouched.
+const LIGHT_MIN_CONTRAST = 4.5;
+const termThemeOptions = light => ({
+  theme:                light ? LIGHT_TERM_THEME : DARK_TERM_THEME,
+  minimumContrastRatio: light ? LIGHT_MIN_CONTRAST : 1,
+});
+
+// Colour-scheme updates (DEC mode 2031, as in kitty/ghostty/contour): an app
+// that enables the mode is told "dark"/"light" whenever the theme toggles, and
+// can ask with CSI ? 996 n. Reports are never sent unless the app opted in -
+// unsolicited, they'd arrive as stray keystrokes.
+const COLOR_SCHEME_MODE = 2031;
+const colorSchemeReport = light => `\x1b[?997;${light ? 2 : 1}n`;
+
 // Terminal font — the scanline "Glass TTY VT220" font reads poorly at small
 // sizes, so this is the page-wide default (mirrors style.css's html/body font),
 // lazy-loaded from Google Fonts.
@@ -1737,6 +1754,8 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
   const reconnectRef  = useRef(null);  // pending reconnect setTimeout id
   const readyRef      = useRef(false); // true after Proxmox sends "OK"
   const sendStrRef    = useRef(null);  // current terminal's send function (for _activeTerm cleanup)
+  const sendRawRef     = useRef(null);  // sends terminal-generated replies (no ownership claim)
+  const schemeNotifyRef = useRef(false); // app enabled colour-scheme updates (mode 2031)
   const focusHandlerRef = useRef(null); // textarea 'focus' listener (for _activeTerm cleanup)
   const lightModeRef  = useRef(lightMode); // kept current so the async creation closure uses latest value
   const roRef          = useRef(null);  // ResizeObserver (torn down in the outer cleanup, see below)
@@ -1770,7 +1789,8 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    term.options.theme = lightMode ? LIGHT_TERM_THEME : DARK_TERM_THEME;
+    Object.assign(term.options, termThemeOptions(lightMode));
+    if (schemeNotifyRef.current) sendRawRef.current?.(colorSchemeReport(lightMode));
   }, [lightMode]);
 
   useEffect(() => {
@@ -1784,7 +1804,7 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
       if (destroyed || !xtermHostRef.current) return;
 
       const term = new Terminal({
-        theme:       lightModeRef.current ? LIGHT_TERM_THEME : DARK_TERM_THEME,
+        ...termThemeOptions(lightModeRef.current),
         fontFamily:  TERM_FONT,
         fontSize:    TERM_FONT_SIZE,
         cursorStyle: 'block',
@@ -1917,6 +1937,28 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
         }
       };
       sendStrRef.current = sendStr;
+
+      // Terminal-generated replies (not user input): no ownership claim, and
+      // only from the device that owns the size - every connected device's
+      // xterm sees the same query, and the app should get one answer.
+      const sendRaw = str => {
+        const ws = wsRef.current;
+        if (ws?.readyState === WebSocket.OPEN && readyRef.current && !watchRef.current.watching) {
+          ws.send(`0:${new TextEncoder().encode(str).length}:${str}`);
+        }
+      };
+      sendRawRef.current = sendRaw;
+      const onSchemeMode = enable => params => {
+        if (params.includes(COLOR_SCHEME_MODE)) schemeNotifyRef.current = enable;
+        return false; // let xterm handle any other modes in the same sequence
+      };
+      term.parser.registerCsiHandler({ prefix: '?', final: 'h' }, onSchemeMode(true));
+      term.parser.registerCsiHandler({ prefix: '?', final: 'l' }, onSchemeMode(false));
+      term.parser.registerCsiHandler({ prefix: '?', final: 'n' }, params => {
+        if (params.length !== 1 || params[0] !== 996) return false;
+        sendRaw(colorSchemeReport(lightModeRef.current));
+        return true;
+      });
       term.onData(d => {
         _activeTerm.send = sendStr;
         // Sticky Ctrl (armed by the mobile key row): map the next single
