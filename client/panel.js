@@ -1682,7 +1682,6 @@ const RECONNECT_MAX_MS  = 15000;
 const PING_INTERVAL_MS   = 30000;
 const PROBE_TIMEOUT_MS   = 5000;  // resume/online probe
 const CONNECT_TIMEOUT_MS = 10000; // open + Proxmox "OK"
-const PING_ACK = '{"ack":1}';
 // Fired by App when /api/status recovers after failures: the network is back,
 // so every terminal checks its socket rather than waiting out a backoff.
 const REVIVE_EVENT = 'panel:revive';
@@ -1960,6 +1959,7 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
       function onOwnership(json) {
         let msg;
         try { msg = JSON.parse(json); } catch { return; }
+        if (msg.ack) return; // keepalive ack: its arrival (lastRx) is all that matters
         // Another device claimed this terminal: it's now the active one.
         if (msg.claimed && !msg.owner) _device.active = false;
         const watching = !msg.owner && !!msg.cols && !!msg.rows;
@@ -2021,8 +2021,7 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
           lastRx = Date.now();
           pingSentAt = 0;
           if (typeof e.data === 'string' && e.data.startsWith(CTL_PREFIX)) {
-            const json = e.data.slice(CTL_PREFIX.length);
-            if (json !== PING_ACK) onOwnership(json);
+            onOwnership(e.data.slice(CTL_PREFIX.length));
             return;
           }
           const data = new Uint8Array(e.data instanceof ArrayBuffer ? e.data : new TextEncoder().encode(e.data));
