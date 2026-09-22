@@ -1816,7 +1816,7 @@ function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }) {
       term.open(xtermHostRef.current);
       // Our scrollbar is hidden, so xterm measures its width as 0 and then
       // substitutes a 15px fallback, which FitAddon reserves on the right:
-      // a two-column dead strip on every pane. Nothing else reads it.
+      // a two-column dead strip on every pane. Only FitAddon reads it.
       const viewport = term._core?.viewport;
       if (viewport && 'scrollBarWidth' in viewport) viewport.scrollBarWidth = 0;
 
