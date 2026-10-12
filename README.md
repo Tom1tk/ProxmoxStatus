@@ -141,6 +141,12 @@ PVE_API_TOKEN=PVEAPIToken=root@pam!dashboard=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxx
 # Proxmox user credentials — for terminal panes (PVEVNC ticket auth)
 PVE_USERNAME=dashboard@pve
 PVE_PASSWORD=your-password-here
+
+# Optional — desktop PC rail beside the GPU graph (online dot, wake/restart/shutdown).
+# Needs wakeonlan installed and the service user's SSH key on the PC. Omit to hide the rail.
+PC_IP=192.168.1.50
+PC_USER=you
+PC_MAC=AA:BB:CC:DD:EE:FF
 ```
 
 **Never commit `.env` or `config.json` with real secrets to version control.** Both are gitignored.

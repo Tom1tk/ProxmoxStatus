@@ -1100,8 +1100,61 @@ function GpuDetailPanel({ lightMode, selectedIdx }) {
   `;
 }
 
+// ─── PcRail ──────────────────────────────────────────────────────────────────
+// Slim strip beside the GPU graph: desktop PC online dot + wake/restart/shutdown.
+const PC_ICONS = {
+  wake:     html`<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 3v9M6.3 6.3a8 8 0 1 0 11.4 0"/></svg>`,
+  restart:  html`<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/></svg>`,
+  shutdown: html`<svg viewBox="0 0 24 24" width="13" height="13"><rect x="3" y="3" width="18" height="18" fill="currentColor"/></svg>`,
+};
+
+function PcRail({ pc }) {
+  const [pending, setPending]   = useState(null);
+  const [feedback, setFeedback] = useState(null);
+
+  async function doAction(action) {
+    if (pending) return;
+    if (action !== 'wake' && !confirm(action === 'restart' ? 'Restart the PC?' : 'Shut down the PC?')) return;
+    setPending(action);
+    try {
+      const res  = await fetch(`/api/pc/${action}`, { method: 'POST' });
+      const data = await res.json();
+      setFeedback({ ok: data.success, msg: data.success ? `${action.toUpperCase()} SENT` : `${action.toUpperCase()} FAILED: ${data.error || ''}` });
+    } catch {
+      setFeedback({ ok: false, msg: 'NET ERR' });
+    }
+    setPending(null);
+    setTimeout(() => setFeedback(null), 3000);
+  }
+
+  const on  = pc.online;
+  const dot = on == null ? C.dimmer : on ? C.greenHi : C.red;
+  const btn = (action, color) => html`
+    <button
+      title=${feedback && feedback.msg.startsWith(action.toUpperCase()) ? feedback.msg : action.toUpperCase()}
+      aria-label=${action}
+      disabled=${!!pending}
+      onClick=${() => doAction(action)}
+      style="
+        width:32px;height:32px;padding:0;display:flex;align-items:center;justify-content:center;
+        background:${pending === action ? color + '30' : 'transparent'};
+        border:1px solid ${feedback && feedback.msg.startsWith(action.toUpperCase()) ? (feedback.ok ? C.greenHi : C.red) : color + '80'};
+        color:${color};cursor:${pending ? 'wait' : 'pointer'};
+      ">${PC_ICONS[action]}</button>`;
+
+  return html`
+    <div style="width:44px;flex-shrink:0;border-left:1px solid ${C.borderDim};display:flex;flex-direction:column;align-items:center;gap:6px;padding:8px 6px">
+      <div style="font-size:9px;color:${C.dim};letter-spacing:1px">PC</div>
+      <span title=${on == null ? 'CHECKING' : on ? 'ONLINE' : 'OFFLINE'} style="width:8px;height:8px;border-radius:50%;background:${dot};box-shadow:${on == null ? 'none' : '0 0 6px ' + dot}"></span>
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:center;gap:6px">
+        ${btn('wake', C.greenHi)}${btn('restart', C.amberHi)}${btn('shutdown', C.red)}
+      </div>
+    </div>
+  `;
+}
+
 // ─── GpuSection ───────────────────────────────────────────────────────────────
-function GpuSection({ gpus, show, lightMode }) {
+function GpuSection({ gpus, pc, show, lightMode }) {
   const [selectedIdx, setSelectedIdx] = useState(1);
   if (!show) return null;
   return html`
@@ -1117,6 +1170,7 @@ function GpuSection({ gpus, show, lightMode }) {
       <div style="flex:1;min-width:0;overflow-y:auto">
         ${h(GpuDetailPanel, { lightMode, selectedIdx })}
       </div>
+      ${pc && h(PcRail, { pc })}
     </div>
   `;
 }
@@ -1253,7 +1307,7 @@ function LxcStatsPanel({ lxcs }) {
 // (identical to the dashboard↔panes swap in App) crossfades between them.
 // Both stay mounted so GPU polling keeps running and LXC stagger phases
 // survive tab swaps.
-function BottomSection({ gpus, lxcs, showGpus, lightMode }) {
+function BottomSection({ gpus, pc, lxcs, showGpus, lightMode }) {
   const [tab, setTab] = useState('gpu');
   const hasLxcs = lxcs && lxcs.length > 0;
   if (!showGpus && !hasLxcs) return null;
@@ -1278,7 +1332,7 @@ function BottomSection({ gpus, lxcs, showGpus, lightMode }) {
   if (!showTabs) {
     body = !showGpus
       ? h(LxcStatsPanel, { lxcs })
-      : h(GpuSection, { gpus, show: true, lightMode });
+      : h(GpuSection, { gpus, pc, show: true, lightMode });
   } else {
     const fade = active => ({
       transition:    'opacity 0.3s ease, transform 0.3s ease',
@@ -1289,7 +1343,7 @@ function BottomSection({ gpus, lxcs, showGpus, lightMode }) {
     body = html`
       <div style="position:relative">
         <div style=${fade(activeTab === 'gpu')}>
-          ${h(GpuSection, { gpus, show: true, lightMode })}
+          ${h(GpuSection, { gpus, pc, show: true, lightMode })}
         </div>
         <div style=${{ position: 'absolute', inset: 0, overflow: 'hidden', ...fade(activeTab === 'lxc') }}>
           ${h(LxcStatsPanel, { lxcs })}
@@ -1908,7 +1962,7 @@ function App() {
             pointer-events: ${view === 'dashboard' ? 'auto' : 'none'};
           ">
             ${h(LxcGrid,       { lxcs, cols, flickerRef, openVmid, setOpenVmid })}
-            ${h(BottomSection, { gpus, lxcs, showGpus, lightMode })}
+            ${h(BottomSection, { gpus, pc: status && status.pc, lxcs, showGpus, lightMode })}
           </div>
 
           <!-- Panes view -->

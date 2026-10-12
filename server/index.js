@@ -7,6 +7,7 @@ const ProxmoxClient = require('./proxmox');
 const host = require('./host');
 const gpuHistory = require('./gpuHistory');
 const paneStore        = require('./paneStore');
+const pc               = require('./pc');
 const { createTermProxyServer } = require('./termProxy');
 
 const app = express();
@@ -31,6 +32,7 @@ app.get('/api/status', (req, res) => {
       cpu_temp: temp ? temp.package_temp : null,
     } : null,
     gpus: host.getGpuCache(),
+    pc: pc.getStatus(),
   });
 });
 
@@ -50,6 +52,20 @@ app.post('/api/lxc/:vmid(\\d+)/:action', async (req, res) => {
     res.json({ success: true, data: result });
   } catch (err) {
     console.error(`[panel] Action ${action} on LXC ${vmid} failed:`, err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/pc/:action', async (req, res) => {
+  const { action } = req.params;
+  if (!pc.ACTIONS.includes(action)) {
+    return res.status(400).json({ success: false, error: 'Invalid action' });
+  }
+  try {
+    await pc.runAction(action);
+    res.json({ success: true });
+  } catch (err) {
+    console.error(`[panel] PC ${action} failed:`, err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -105,6 +121,12 @@ app.get('/api', (req, res) => {
           action: 'start | shutdown | reboot',
         },
         returns: '{ success: bool, data: <proxmox task ID> } or { success: false, error: string }',
+      },
+      {
+        method: 'POST', path: '/api/pc/:action',
+        description: 'Control the desktop PC (online state is in /api/status as pc.online)',
+        params: { action: 'wake | restart | shutdown' },
+        returns: '{ success: bool } or { success: false, error: string }',
       },
       {
         method: 'GET', path: '/api/gpu/current',
@@ -195,6 +217,7 @@ const port = cfg.port || 3000;
 client.startPolling();
 gpuHistory.startPolling();
 host.startPolling();
+pc.startPolling();
 
 const server = app.listen(port, '0.0.0.0', () => {
   console.log(`[panel] Proxmox Status Panel running at http://0.0.0.0:${port}`);
