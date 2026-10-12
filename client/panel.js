@@ -2469,7 +2469,14 @@ function App() {
     try {
       // Timeout so a poll hung across a tab switch fails fast instead of
       // straddling the resume.
-      const res = await fetch('/api/status', { signal: AbortSignal.timeout?.(STATUS_TIMEOUT_MS) });
+      const res = await fetch('/api/status', { signal: AbortSignal.timeout?.(STATUS_TIMEOUT_MS), redirect: 'manual' });
+      // Cloudflare Access session expired: every request (terminal sockets
+      // too) now bounces to its login, which no retry gets past. A page load
+      // re-authenticates (silently while the identity provider session lasts).
+      if (res.type === 'opaqueredirect' || res.status === 401 || res.status === 403) {
+        if (!document.hidden) location.reload();
+        throw new Error('access session expired');
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setStatus(data);
