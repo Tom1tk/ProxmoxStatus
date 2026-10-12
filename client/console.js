@@ -379,7 +379,16 @@ export function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }
         sendRaw(colorSchemeReport(lightModeRef.current));
         return true;
       });
+      // xterm also emits its automatic replies to the app's queries (device
+      // attributes, cursor position, focus in/out) through onData. Those come
+      // from every connected device, so they must not claim: only data that
+      // follows a real input event here counts as typing.
+      let lastInputAt = -Infinity;
+      for (const t of ['keydown', 'paste', 'input', 'compositionend', 'mousedown', 'wheel']) {
+        term.element.addEventListener(t, () => { lastInputAt = performance.now(); }, true);
+      }
       term.onData(d => {
+        if (performance.now() - lastInputAt > 250) { sendRaw(d); return; }
         _activeTerm.send = sendStr;
         // Sticky Ctrl (armed by the mobile key row): map the next single
         // printable char to its control code (e.g. 'c' → 0x03 = Ctrl+C).
