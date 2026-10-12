@@ -8,7 +8,8 @@ const ENV_PATH    = path.join(__dirname, '..', '.env');
 
 // Load .env before anything else so env vars are available to loadConfig().
 // Only sets variables that aren't already in the environment (process.env wins).
-// No external dependency — parses KEY=value lines, strips inline comments.
+// No external dependency — parses KEY=value lines, strips " # inline comments"
+// (a # with no space before it is part of the value, e.g. a password).
 (function loadDotEnv() {
   try {
     const lines = fs.readFileSync(ENV_PATH, 'utf8').split('\n');
@@ -18,7 +19,7 @@ const ENV_PATH    = path.join(__dirname, '..', '.env');
       const eq = line.indexOf('=');
       if (eq < 1) continue;
       const key = line.slice(0, eq).trim();
-      const val = line.slice(eq + 1).trim().replace(/#.*$/, '').trim();
+      const val = line.slice(eq + 1).trim().replace(/\s+#.*$/, '').trim();
       if (key && !(key in process.env)) process.env[key] = val;
     }
   } catch { /* .env is optional */ }
@@ -38,11 +39,9 @@ const DEFAULTS = {
   show_gpus: false,
   max_net_mbps: 1000,
   lxc_grid_cols: 6,
-  // Console / panes view — set these to enable auto-login for the LXC console view
-  pve_username: '',      // e.g. root@pam
+  // Terminal panes — PVE user the server logs in as (prefer .env)
+  pve_username: '',      // e.g. dashboard@pve
   pve_password: '',      // PVE user password (not the API token)
-  console_base_url: '',  // e.g. https://prox.endless777.online
-  cookie_domain: '',     // e.g. .endless777.online (must share domain with dashboard)
 };
 
 let _config = null;
@@ -86,11 +85,6 @@ function getPublicConfig() {
     })),
     lxc_grid_cols: cfg.lxc_grid_cols,
     max_net_mbps: cfg.max_net_mbps,
-    // Console panes — proxmox_node and console_base_url are needed by the client
-    // to construct iframe URLs. pve_password is never exposed.
-    proxmox_node: cfg.proxmox_node,
-    console_base_url: cfg.console_base_url || null,
-    console_enabled: !!(cfg.console_base_url && cfg.pve_username && cfg.pve_password && cfg.cookie_domain),
   };
 }
 

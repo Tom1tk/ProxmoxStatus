@@ -11,10 +11,8 @@
   "host_exporter_url": "http://10.0.0.2:9101/metrics",
   "host_exporter_poll_ms": 5000,
   "show_gpus": false,
-  "max_net_bytes_per_sec": 125000000,
+  "max_net_mbps": 1000,
   "lxc_grid_cols": 6,
   "pve_username": "",
-  "pve_password": "",
-  "console_base_url": "",
-  "cookie_domain": ""
+  "pve_password": ""
 }

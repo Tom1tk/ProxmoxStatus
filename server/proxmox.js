@@ -4,6 +4,10 @@ const https = require('https');
 const fetch = require('node-fetch');
 const { getConfig, getDisplayName } = require('./config');
 
+// A hung Proxmox API must fail the poll (and mark the cache stale) rather than
+// leave requests piling up while old numbers are served as fresh.
+const REQUEST_TIMEOUT_MS = 8000;
+
 class ProxmoxClient {
   constructor() {
     this._cache = null;
@@ -173,13 +177,13 @@ class ProxmoxClient {
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
   async _get(url, headers, agent) {
-    const res = await fetch(url, { headers, agent });
+    const res = await fetch(url, { headers, agent, timeout: REQUEST_TIMEOUT_MS });
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
     return res.json();
   }
 
   async _post(url, headers, agent) {
-    const res = await fetch(url, { method: 'POST', headers, agent });
+    const res = await fetch(url, { method: 'POST', headers, agent, timeout: REQUEST_TIMEOUT_MS });
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
     return res.json();
   }

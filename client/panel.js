@@ -122,6 +122,11 @@ function injectTermFont() {
 injectTermFont();
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+// localStorage throws in some private/locked-down browsers; settings then just
+// don't persist instead of the app failing to start.
+function lsGet(key) { try { return localStorage.getItem(key); } catch { return null; } }
+function lsSet(key, val) { try { localStorage.setItem(key, val); } catch {} }
+
 function formatUptime(seconds) {
   if (!seconds) return '0d 00:00';
   const d = Math.floor(seconds / 86400);
@@ -266,7 +271,7 @@ let _dashBarH = 0;
 
 // ─── HeaderBar ───────────────────────────────────────────────────────────────
 // Dual-mode: dashboard metrics row OR panes tab strip, toggled by the ⊞ PANES button.
-function HeaderBar({ node, lxcs, config, view, setView, paneStates, onTabClick, onTabClose, keyRowOpen, setKeyRowOpen }) {
+function HeaderBar({ node, stale, lxcs, config, view, setView, paneStates, onTabClick, onTabClose, keyRowOpen, setKeyRowOpen }) {
   const vw     = window.innerWidth;
   const narrow = vw < 480;   // phone portrait
   const tiny   = vw < 360;   // very small phone
@@ -501,6 +506,9 @@ function HeaderBar({ node, lxcs, config, view, setView, paneStates, onTabClick, 
   },
     h('span', { style: { color: C.amberHi, fontWeight: 'bold', flexShrink: 0, letterSpacing: narrow ? 0 : '1px', fontFamily: DEFAULT_FONT, fontSize: fs } },
       config ? config.panel_title : 'HOST'),
+
+    // Server is up but can't reach Proxmox: the numbers below are its last good copy.
+    stale ? h('span', { style: { color: C.red, fontWeight: 'bold', flexShrink: 0 }, title: 'Proxmox API not responding - showing last known values' }, 'STALE') : null,
 
     sep,
 
@@ -1403,18 +1411,18 @@ function Footer({ config, node, lightMode, setLightMode, view, readerMode, setRe
     : (config ? config.panel_subtitle : 'PROXMOX');
   function toggleTheme() {
     const next = !lightMode;
-    localStorage.setItem('panelTheme', next ? 'light' : 'dark');
+    lsSet('panelTheme', next ? 'light' : 'dark');
     setLightMode(next);
   }
   function toggleReader() {
     const next = !readerMode;
-    localStorage.setItem('panelReader', next ? '1' : '0');
+    lsSet('panelReader', next ? '1' : '0');
     setReaderMode(next);
   }
   function cycleReaderSize() {
     const i = READER_SIZE_ORDER.indexOf(readerSize);
     const next = READER_SIZE_ORDER[(i + 1) % READER_SIZE_ORDER.length];
-    localStorage.setItem('panelReaderSize', next);
+    lsSet('panelReaderSize', next);
     setReaderSize(next);
   }
   const iconBtnStyle = active => ({
@@ -2432,9 +2440,9 @@ function App() {
   const [view,        setView]       = useState('dashboard'); // 'dashboard' | 'panes'
   const [paneStates,  setPaneStates] = useState({});          // vmid → 'closed'|'visible'|'minimized'
   const [keyRowOpen,  setKeyRowOpen] = useState(false);       // mobile-only on-screen key row
-  const [lightMode,   setLightMode]  = useState(() => localStorage.getItem('panelTheme') === 'light');
-  const [readerMode,  setReaderMode] = useState(() => localStorage.getItem('panelReader') === '1');
-  const [readerSize,  setReaderSize] = useState(() => localStorage.getItem('panelReaderSize') || 's');
+  const [lightMode,   setLightMode]  = useState(() => lsGet('panelTheme') === 'light');
+  const [readerMode,  setReaderMode] = useState(() => lsGet('panelReader') === '1');
+  const [readerSize,  setReaderSize] = useState(() => lsGet('panelReaderSize') || 's');
   // Which pane reader mode shows full-screen. Lives here (not in PaneGrid) because
   // in reader mode the non-focused panes are display:none and the focused one sits
   // behind a pointer-events:none host, so the tab strip — driven by App's own
@@ -2531,11 +2539,12 @@ function App() {
       .catch(() => {});
   }, []);
 
-  function savePaneStates(states) {
+  // Sends only the panes that changed; the server merges them.
+  function savePaneStates(changes) {
     fetch('/api/panes', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(states),
+      body:    JSON.stringify(changes),
     }).catch(() => {});
   }
 
@@ -2545,7 +2554,7 @@ function App() {
       const cur     = prev[vmid] || 'closed';
       const next    = cur === 'closed' ? 'visible' : cur === 'visible' ? 'minimized' : 'visible';
       const updated = { ...prev, [vmid]: next };
-      savePaneStates(updated);
+      savePaneStates({ [vmid]: next });
       return updated;
     });
     // Becoming visible is a clear "look at this one" signal — also what reader
@@ -2560,7 +2569,7 @@ function App() {
   function handleTabClose(vmid) {
     setPaneStates(prev => {
       const updated = { ...prev, [vmid]: 'closed' };
-      savePaneStates(updated);
+      savePaneStates({ [vmid]: 'closed' });
       return updated;
     });
   }
@@ -2597,6 +2606,7 @@ function App() {
         ${disconnected ? h(ConnectionOverlay, { lastUpdate }) : null}
         ${h(HeaderBar, {
           node: status ? status.node : null,
+          stale: !!(status && status.stale && status.node),
           lxcs, config, view, setView,
           paneStates,
           onTabClick:  handleTabClick,

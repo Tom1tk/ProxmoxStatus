@@ -32,7 +32,19 @@ function createTermProxyServer(httpServer) {
   });
 
   httpServer.on('upgrade', (request, socket, head) => {
-    const url      = new URL(request.url, 'http://localhost');
+    let url;
+    try {
+      url = new URL(request.url, 'http://localhost');
+      // Browsers always send Origin on a WebSocket; refuse sockets opened by a
+      // page on another site. Non-browser clients (no Origin) carry no cookies.
+      const origin = request.headers.origin;
+      if (origin && new URL(origin).host !== request.headers.host) {
+        console.warn(`[termproxy] rejected origin ${origin} for host ${request.headers.host}`);
+        return socket.destroy();
+      }
+    } catch {
+      return socket.destroy(); // malformed URL or Origin
+    }
     const lxcMatch = url.pathname.match(/^\/api\/lxc\/(\d+)\/termproxy$/);
     const isNode   = url.pathname === '/api/node/termproxy';
 

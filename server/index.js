@@ -6,7 +6,6 @@ const { getConfig, getPublicConfig } = require('./config');
 const ProxmoxClient = require('./proxmox');
 const host = require('./host');
 const gpuHistory = require('./gpuHistory');
-const consoleAuth      = require('./console');
 const paneStore        = require('./paneStore');
 const { createTermProxyServer } = require('./termProxy');
 
@@ -41,7 +40,7 @@ app.get('/api/config', (req, res) => {
 
 const ALLOWED_ACTIONS = new Set(['start', 'shutdown', 'reboot']);
 
-app.post('/api/lxc/:vmid/:action', async (req, res) => {
+app.post('/api/lxc/:vmid(\\d+)/:action', async (req, res) => {
   const { vmid, action } = req.params;
   if (!ALLOWED_ACTIONS.has(action)) {
     return res.status(400).json({ success: false, error: 'Invalid action' });
@@ -66,28 +65,6 @@ app.get('/api/gpu/history', (req, res) => {
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: Date.now() });
-});
-
-// Console session — verifies Proxmox credentials are working.
-// NOTE: we deliberately do NOT set PVEAuthCookie here. Setting it with
-// Domain=.endless777.online would affect prox.endless777.online too, overwriting
-// the user's root@pam session with the limited dashboard@pve account → 403 everywhere.
-// Console iframes instead rely on the browser's existing Proxmox session cookie.
-app.get('/api/console/session', async (req, res) => {
-  const cfg = getConfig();
-  if (!cfg.console_base_url || !cfg.pve_username || !cfg.pve_password) {
-    return res.status(503).json({
-      ok: false,
-      error: 'Console credentials not configured (pve_username / pve_password missing from .env)',
-    });
-  }
-  try {
-    const { expires } = await consoleAuth.getTicket();
-    res.json({ ok: true, expires });
-  } catch (err) {
-    console.error('[panel] Console session error:', err.message);
-    res.status(500).json({ ok: false, error: err.message });
-  }
 });
 
 // ─── Agent-facing convenience endpoints ────────────────────────────────────
@@ -147,17 +124,12 @@ app.get('/api', (req, res) => {
         description: 'Health check — { status: "ok", timestamp: <epoch ms> }',
       },
       {
-        method: 'GET', path: '/api/console/session',
-        description: 'Mint a Proxmox auth ticket and set PVEAuthCookie so LXC console iframes auto-authenticate. Requires console credentials in config.json.',
-        returns: '{ ok: true, expires: <epoch ms> } or { ok: false, error: string }',
-      },
-      {
         method: 'GET', path: '/api/panes',
         description: 'Load persisted pane open/minimised states: { states: { vmid: "visible"|"minimized" } }',
       },
       {
         method: 'POST', path: '/api/panes',
-        description: 'Save pane states. Body: { vmid: "visible"|"minimized"|"closed" }. Persisted to pane-states.json on the server.',
+        description: 'Update pane states. Body: { vmid: "visible"|"minimized"|"closed" } for the panes that changed; merged into pane-states.json on the server.',
       },
     ],
   });

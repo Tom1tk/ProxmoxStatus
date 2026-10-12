@@ -48,6 +48,7 @@ async function _poll() {
     _tempCache = data.temps || null;
   } catch (err) {
     console.warn(`[host] Exporter unreachable: ${err.message}`);
+    _tempCache = null; // don't keep showing the last reading as current
   }
 }
 

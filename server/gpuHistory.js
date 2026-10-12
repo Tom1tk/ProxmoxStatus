@@ -9,6 +9,7 @@ const PERSIST_PATH   = '/var/lib/dashboard/gpu_history.json';
 const POLL_MS        = 2000;
 const PERSIST_MS     = 5 * 60 * 1000;
 const MAX_SAMPLES    = 302400;   // 7 days at 2s resolution
+const STALE_MS       = 30000;    // file not rewritten for this long = its writer is dead
 
 // ─── Ring buffer state ────────────────────────────────────────────────────────
 // Keyed by String(gpu.index)
@@ -72,6 +73,7 @@ function _extract(buf, n) {
 // CSV format: index,name,temp,power_draw,power_limit,gpu_util,mem_util,fan_pct
 function _parseGpuStats() {
   try {
+    if (Date.now() - fs.statSync(GPU_STATS_FILE).mtimeMs > STALE_MS) return [];
     const text = fs.readFileSync(GPU_STATS_FILE, 'utf8');
     return text.trim().split('\n').map(line => {
       const p = line.split(',').map(s => s.trim());
@@ -130,7 +132,9 @@ function _persist() {
         fan:   Array.from(d.fan),
       };
     }
-    fs.writeFileSync(PERSIST_PATH, JSON.stringify(out));
+    // Write then rename: a crash mid-write must not destroy the saved history.
+    fs.writeFileSync(PERSIST_PATH + '.tmp', JSON.stringify(out));
+    fs.renameSync(PERSIST_PATH + '.tmp', PERSIST_PATH);
   } catch (err) {
     console.warn('[gpuHistory] persist failed:', err.message);
   }

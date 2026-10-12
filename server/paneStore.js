@@ -15,13 +15,18 @@ function load() {
   }
 }
 
-// Save state map — strips closed entries to keep the file compact.
-function save(states) {
-  const compact = {};
-  for (const [vmid, state] of Object.entries(states || {})) {
-    if (state === 'visible' || state === 'minimized') compact[vmid] = state;
+// Merge changed panes into the saved map: { vmid: 'visible'|'minimized'|'closed' }.
+// Only changes are sent, so a device with an old copy can't undo another's.
+// Closed is the default and is removed rather than stored.
+const VMID_RE = /^(\d+|node)$/;
+function save(changes) {
+  const states = load();
+  for (const [vmid, state] of Object.entries(changes || {})) {
+    if (!VMID_RE.test(vmid)) continue;
+    if (state === 'visible' || state === 'minimized') states[vmid] = state;
+    else if (state === 'closed') delete states[vmid];
   }
-  fs.writeFileSync(STORE_PATH, JSON.stringify(compact, null, 2), 'utf8');
+  fs.writeFileSync(STORE_PATH, JSON.stringify(states, null, 2), 'utf8');
 }
 
 module.exports = { load, save };
