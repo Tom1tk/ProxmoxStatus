@@ -5,7 +5,8 @@ const path = require('path');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const GPU_STATS_FILE = '/mnt/gpu-stats/gpu_stats.txt';
-const PERSIST_PATH   = '/var/lib/dashboard/gpu_history.json';
+const PERSIST_PATH   = '/var/lib/dashboard/gpu_history.bin';
+const LEGACY_PATH    = '/var/lib/dashboard/gpu_history.json'; // pre-binary format, read once then removed
 const POLL_MS        = 2000;
 const PERSIST_MS     = 5 * 60 * 1000;
 const MAX_SAMPLES    = 302400;   // 7 days at 2s resolution
@@ -113,36 +114,89 @@ function _poll() {
 
 // ─── Persistence ─────────────────────────────────────────────────────────────
 
+// Binary format: 4-byte LE header length, JSON header {v, gpus:[{key,name,count}]},
+// then per GPU the six arrays in ARRAYS order, each `count` samples, oldest first.
+// Native-endian typed arrays: the file is only read back on this host.
+const ARRAYS = ['ts', 'temp', 'power', 'util', 'mem', 'fan'];
+const SAMPLE_BYTES = 8 + 5 * 4;
+
+const _bytes = (arr, from, to) =>
+  Buffer.from(arr.buffer, arr.byteOffset + from * arr.BYTES_PER_ELEMENT, (to - from) * arr.BYTES_PER_ELEMENT);
+
 function _persist() {
   try {
     const dir = path.dirname(PERSIST_PATH);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-    const out = {};
-    for (const [key, buf] of Object.entries(_bufs)) {
-      const d    = _extract(buf, buf.count);
-      out[key] = {
-        name:  buf.name,
-        count: buf.count,
-        ts:    Array.from(d.ts),
-        temp:  Array.from(d.temp),
-        power: Array.from(d.power),
-        util:  Array.from(d.util),
-        mem:   Array.from(d.mem),
-        fan:   Array.from(d.fan),
-      };
+    const entries = Object.entries(_bufs);
+    const header  = Buffer.from(JSON.stringify({
+      v: 1, gpus: entries.map(([key, buf]) => ({ key, name: buf.name, count: buf.count })),
+    }));
+    const len = Buffer.alloc(4);
+    len.writeUInt32LE(header.length);
+
+    // Synchronous on purpose: _poll must not push between the head read and the writes.
+    const fd = fs.openSync(PERSIST_PATH + '.tmp', 'w');
+    try {
+      fs.writeSync(fd, len);
+      fs.writeSync(fd, header);
+      for (const [, buf] of entries) {
+        const full = buf.count === MAX_SAMPLES;
+        for (const k of ARRAYS) {
+          if (full) {
+            fs.writeSync(fd, _bytes(buf[k], buf.head, MAX_SAMPLES));
+            fs.writeSync(fd, _bytes(buf[k], 0, buf.head));
+          } else {
+            fs.writeSync(fd, _bytes(buf[k], 0, buf.count));
+          }
+        }
+      }
+    } finally {
+      fs.closeSync(fd);
     }
     // Write then rename: a crash mid-write must not destroy the saved history.
-    fs.writeFileSync(PERSIST_PATH + '.tmp', JSON.stringify(out));
     fs.renameSync(PERSIST_PATH + '.tmp', PERSIST_PATH);
+    fs.rmSync(LEGACY_PATH, { force: true });
   } catch (err) {
     console.warn('[gpuHistory] persist failed:', err.message);
   }
 }
 
-function _load() {
+// Returns false if the file is missing or malformed (it is untrusted input).
+function _loadBinary() {
+  let raw;
+  try { raw = fs.readFileSync(PERSIST_PATH); } catch { return false; }
   try {
-    const raw   = fs.readFileSync(PERSIST_PATH, 'utf8');
+    const hLen   = raw.readUInt32LE(0);
+    const header = JSON.parse(raw.subarray(4, 4 + hLen).toString());
+    if (header.v !== 1 || !Array.isArray(header.gpus)) return false;
+    const gpus = header.gpus;
+    if (gpus.some(g => !Number.isInteger(g.count) || g.count < 0 || g.count > MAX_SAMPLES)) return false;
+    if (raw.length !== 4 + hLen + gpus.reduce((s, g) => s + g.count * SAMPLE_BYTES, 0)) return false;
+
+    let off = 4 + hLen;
+    for (const g of gpus) {
+      const buf = _makeBuffer(String(g.name));
+      for (const k of ARRAYS) {
+        const n = g.count * buf[k].BYTES_PER_ELEMENT;
+        // Copy bytes rather than view: `off` is not aligned for a Float64Array view.
+        new Uint8Array(buf[k].buffer).set(raw.subarray(off, off + n));
+        off += n;
+      }
+      buf.head  = g.count % MAX_SAMPLES;
+      buf.count = g.count;
+      _bufs[String(g.key)] = buf;
+    }
+    console.log('[gpuHistory] restored', gpus.length, 'GPU(s) from disk');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function _loadLegacy() {
+  try {
+    const raw   = fs.readFileSync(LEGACY_PATH, 'utf8');
     const saved = JSON.parse(raw);
     for (const [key, d] of Object.entries(saved)) {
       const count = Math.min(d.count || 0, MAX_SAMPLES);
@@ -159,38 +213,37 @@ function _load() {
       buf.count = count;
       _bufs[key] = buf;
     }
-    console.log('[gpuHistory] restored', Object.keys(saved).length, 'GPU(s) from disk');
+    console.log('[gpuHistory] restored', Object.keys(saved).length, 'GPU(s) from legacy JSON');
   } catch {
     console.log('[gpuHistory] no saved history, starting fresh');
   }
 }
 
+function _load() {
+  if (!_loadBinary()) _loadLegacy();
+}
+
 // ─── Downsampling ─────────────────────────────────────────────────────────────
 
-// Target point counts per window — keeps canvas rendering fast.
-// All windows longer than 1h target 360 pts (same visual density as 6h).
-function _maxPoints(windowSeconds) {
-  if (windowSeconds <= 3600) return Infinity; // ≤1h : full 2s resolution
-  return 360;                                 // >1h : ~360 pts, same screen density as 6h
-}
+// Every window is capped at ~360 pts — more than the canvas can show. 5m (150 pts) stays full resolution.
+const MAX_POINTS = 360;
 
 // Bucket-mean downsample: averages each metric within equal-width time buckets.
 // Returns plain arrays of length maxPoints (or the original data if already small enough).
-const DS_KEYS = ['ts', 'temp', 'power', 'util', 'mem', 'fan'];
 
 function _downsample(data, maxPoints) {
   const n = data.ts ? data.ts.length : 0;
   if (n === 0 || n <= maxPoints) return data;
 
   const out        = {};
-  DS_KEYS.forEach(k => { out[k] = new Array(maxPoints); });
+  ARRAYS.forEach(k => { out[k] = new Array(maxPoints); });
   const bucketSize = n / maxPoints;
 
   for (let i = 0; i < maxPoints; i++) {
     const start = Math.floor(i * bucketSize);
     const end   = Math.min(Math.floor((i + 1) * bucketSize), n);
     const count = end - start;
-    DS_KEYS.forEach(k => {
+    ARRAYS.forEach(k => {
       let sum = 0;
       for (let j = start; j < end; j++) sum += data[k][j] || 0;
       out[k][i] = sum / count;
@@ -218,11 +271,10 @@ function getCurrentGpuStats() {
 
 function getHistory(windowSeconds) {
   const n      = Math.ceil((windowSeconds * 1000) / POLL_MS);
-  const maxPts = _maxPoints(windowSeconds);
   const result = {};
   for (const [key, buf] of Object.entries(_bufs)) {
     const d     = _extract(buf, n);
-    const down  = isFinite(maxPts) ? _downsample(d, maxPts) : d;
+    const down  = _downsample(d, MAX_POINTS);
     result[key] = { name: buf.name, ...down };
   }
   return result;
