@@ -795,6 +795,15 @@ function relTime(ms) {
   return `${Math.floor(hr / 24)}d`;
 }
 
+// Match the canvas's drawing-buffer height to its CSS height (width stays 1200
+// and is scaled). Returns true when it changed (which also clears the canvas).
+function fitCanvasHeight(canvas) {
+  const h = Math.round(canvas.clientHeight);
+  if (!h || canvas.height === h) return false;
+  canvas.height = h;
+  return true;
+}
+
 // Draw 4-band stacked history chart onto a canvas element
 // hoverIdx: data index to draw crosshair at (optional)
 function drawGpuHistory(canvas, gpuData, powerLimit, hoverIdx) {
@@ -981,11 +990,24 @@ function GpuDetailPanel({ lightMode, selectedIdx }) {
         const gpu        = (current.gpus || []).find(g => String(g.index) === idx);
         const powerLimit = gpu ? gpu.power_limit : 375;
         dataRefs.current[idx] = { gpuData, powerLimit };
+        fitCanvasHeight(canvas);
         drawGpuHistory(canvas, gpuData, powerLimit);
       });
     });
     return () => cancelAnimationFrame(rafId);
   }, [history, current, lightMode]);
+
+  // The graph stretches to fill the section, so redraw at the new pixel height on resize.
+  useEffect(() => {
+    const ro = new ResizeObserver(() => {
+      Object.entries(canvasRefs.current).forEach(([idx, canvas]) => {
+        const data = dataRefs.current[idx];
+        if (canvas.isConnected && data && fitCanvasHeight(canvas)) drawGpuHistory(canvas, data.gpuData, data.powerLimit);
+      });
+    });
+    Object.values(canvasRefs.current).forEach(c => ro.observe(c));
+    return () => ro.disconnect();
+  }, [selectedIdx, history]);
 
   function handleCanvasMouseMove(e, idx) {
     const canvas = canvasRefs.current[idx];
@@ -1048,7 +1070,7 @@ function GpuDetailPanel({ lightMode, selectedIdx }) {
   }
 
   return html`
-    <div style="padding:clamp(4px,0.5vh,8px) clamp(6px,0.8vw,10px);display:flex;flex-direction:column;gap:clamp(3px,0.4vh,5px)">
+    <div style="padding:clamp(4px,0.5vh,8px) clamp(6px,0.8vw,10px);display:flex;flex-direction:column;gap:clamp(3px,0.4vh,5px);height:100%;box-sizing:border-box">
 
       <!-- Time window selector -->
       <div style="display:flex;gap:4px;align-items:center;flex-wrap:nowrap">
@@ -1071,14 +1093,14 @@ function GpuDetailPanel({ lightMode, selectedIdx }) {
 
       <!-- History graph — selected GPU only -->
       ${Object.entries(history).filter(([idx]) => Number(idx) === selectedIdx).map(([idx, gpuData]) => html`
-        <div key=${idx} style="border:1px solid ${C.borderDim};flex-shrink:0">
+        <div key=${idx} style="border:1px solid ${C.borderDim};flex:1;display:flex;flex-direction:column;min-height:0">
           <div style="padding:2px 4px;font-size:clamp(6px,0.65vw,9px);color:${C.purpleHi};border-bottom:1px solid ${C.borderDim};background:${C.bg}80;letter-spacing:0.5px">
             ${gpuData.name || 'GPU ' + idx}
           </div>
-          <div style="position:relative">
+          <div style="position:relative;flex:1;min-height:140px">
             <canvas
               ref=${el => { if (el) canvasRefs.current[idx] = el; }}
-              style="display:block;width:100%;height:140px;cursor:crosshair"
+              style="position:absolute;inset:0;display:block;width:100%;height:100%;cursor:crosshair"
               width="1200"
               height="140"
               onMouseMove=${e => handleCanvasMouseMove(e, idx)}
