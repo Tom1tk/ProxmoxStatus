@@ -503,6 +503,9 @@ export function ConsolePane({ vmid, visible, lightMode, readerMode, readerSize }
               clearTimeout(connectTimer);
               const reconnected = attempt > 0;
               attempt = 0;
+              // A node reconnect is a fresh login, so the old program's mouse
+              // tracking must go, or mouse moves get typed into the prompt.
+              if (reconnected && vmid === 'node') term.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l');
               if (data.length > 2) term.write(data.slice(2));
               if (reconnected) term.writeln('\r\n\x1b[32m[reconnected]\x1b[0m');
               // Double-RAF: wait for pane layout to settle, then apply geometry.
